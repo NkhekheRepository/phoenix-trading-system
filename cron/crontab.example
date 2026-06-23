@@ -1,0 +1,15 @@
+# Phoenix Trading System - Crontab
+# Install each sandbox's cron separately:
+#   crontab -e   (then paste the relevant lines)
+
+# === Phoenix30 ===
+# Health check every 5 min
+*/5 * * * * root cd /opt/phoenix30 && docker compose exec -T phoenix30-bot python /freqtrade/scripts/health_check.py > /tmp/phoenix30_health.log 2>&1
+# BTC regime hourly
+0 * * * * root cd /opt/phoenix30 && docker compose exec -T phoenix30-bot python /freqtrade/scripts/regime_alert.py > /tmp/phoenix30_regime.log 2>&1
+
+# === PhoenixScalper ===
+# Health check every 5 min
+*/5 * * * * root cd /opt/phoenix-scalper && docker compose exec -T phoenix-scalper-bot python /freqtrade/scripts/health_check.py > /tmp/scalper_health.log 2>&1
+# BTC regime hourly
+0 * * * * root cd /opt/phoenix-scalper && docker compose exec -T phoenix-scalper-bot python /freqtrade/scripts/regime_alert.py > /tmp/scalper_regime.log 2>&1

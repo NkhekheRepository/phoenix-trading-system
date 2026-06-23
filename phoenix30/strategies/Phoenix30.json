@@ -1,0 +1,26 @@
+{
+  "strategy_name": "Phoenix30",
+  "params": {
+    "buy": {
+      "adx_threshold": 20,
+      "ema_fast": 13,
+      "ema_slow": 25,
+      "rsi_bounce": 35,
+      "rsi_period": 14,
+      "rsi_pullback_high": 55,
+      "rsi_pullback_low": 39,
+      "volume_factor": 1.086,
+      "ml_threshold": 0.30
+    },
+    "sell": {
+      "rsi_exit": 78
+    },
+    "roi": {
+      "0": 0.27
+    },
+    "stoploss": {
+      "stoploss": -0.99
+    }
+  },
+  "ft_stratparam_v": 1
+}

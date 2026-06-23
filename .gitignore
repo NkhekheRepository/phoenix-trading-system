@@ -1,0 +1,16 @@
+.env
+__pycache__/
+*.py[cod]
+venv/
+*.egg-info/
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+logs/
+*.log
+.docker/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

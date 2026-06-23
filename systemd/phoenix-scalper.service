@@ -1,0 +1,29 @@
+[Unit]
+Description=PhoenixScalper Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+WorkingDirectory=/opt/phoenix-scalper
+ExecStart=docker compose up
+ExecStop=docker compose down
+Restart=always
+RestartSec=10
+
+StartLimitInterval=1min
+StartLimitBurst=5
+TimeoutStartSec=2min
+TimeoutStopSec=30s
+
+LimitNOFILE=65536
+LimitNPROC=4096
+MemoryMax=512M
+MemoryHigh=384M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
