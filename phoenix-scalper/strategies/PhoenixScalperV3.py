@@ -116,6 +116,7 @@ class PhoenixScalperV3(IStrategy):
         self._drift_ref_set = False
         self._drift_ref_buffer = {}
         self._monitor = None
+        self._drift_mode = "normal"
 
     def _ensure_monitor(self):
         if self._monitor is None and hasattr(self, 'dp') and self.dp is not None:
@@ -139,6 +140,37 @@ class PhoenixScalperV3(IStrategy):
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
         try:
+            regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
+            regime_max = {"strong_bear": 10, "weak_bear": 10, "low_volatility": 7, "weak_bull": 3, "strong_bull": 0}
+            new_max = regime_max.get(regime_str, 5)
+
+            drift_summary = {}
+            try:
+                drift_summary = self._concept_drift.get_drift_summary()
+            except Exception:
+                pass
+            max_psi = max((s.get("current_psi", 0) for s in drift_summary.values()), default=0)
+            if max_psi > 2.0:
+                self._drift_mode = "critical"
+                drift_factor = {"strong_bear": 3, "weak_bear": 3, "low_volatility": 3, "weak_bull": 3, "strong_bull": 0}
+                new_max = drift_factor.get(regime_str, 3)
+                self.score_threshold.value = 50
+                self.score_high_threshold.value = 60
+            elif max_psi > 0.5:
+                self._drift_mode = "warning"
+                drift_factor = {"strong_bear": 7, "weak_bear": 7, "low_volatility": 5, "weak_bull": 3, "strong_bull": 0}
+                new_max = drift_factor.get(regime_str, 5)
+                self.score_threshold.value = 48
+                self.score_high_threshold.value = 58
+            else:
+                self._drift_mode = "normal"
+                self.score_threshold.value = 45
+                self.score_high_threshold.value = 55
+
+            if new_max != self.max_open_trades:
+                self.max_open_trades = new_max
+                logger.info(f"Regime {regime_str} drift={self._drift_mode}: max_open_trades -> {new_max}")
+
             self._ensure_monitor()
             if self._monitor is None:
                 return
@@ -221,6 +253,7 @@ class PhoenixScalperV3(IStrategy):
                 "total_profit": total_profit,
                 "win_count": win_count,
                 "loss_count": loss_count,
+                "drift_mode": self._drift_mode,
             })
 
             self._monitor.flush()
