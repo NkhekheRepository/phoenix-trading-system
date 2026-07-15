@@ -20,8 +20,9 @@ class TradeResult:
 
 
 class MonteCarloValidator:
-    def __init__(self, n_simulations: int = 10000):
+    def __init__(self, n_simulations: int = 10000, trades_per_year: Optional[float] = None):
         self.n_simulations = n_simulations
+        self.trades_per_year = trades_per_year
 
     def simulate_trade_sequences(self, trade_results: List[TradeResult]) -> Dict:
         logger.info(f"Running {self.n_simulations} Monte Carlo simulations...")
@@ -32,6 +33,12 @@ class MonteCarloValidator:
         regimes = np.array([t.regime for t in trade_results])
         kf_dirs = np.array([t.kf_direction for t in trade_results])
         kf_confs = np.array([t.kf_confidence for t in trade_results])
+
+        if self.trades_per_year is None:
+            total_hours = float(np.sum(durations))
+            self.trades_per_year = len(trade_results) / max(total_hours / 24 / 365, 1/365)
+
+        ann_factor = np.sqrt(self.trades_per_year)
 
         results = {
             'max_dd': [], 'sharpe': [], 'calmar': [], 'final_equity': [],
@@ -55,7 +62,7 @@ class MonteCarloValidator:
 
             returns_arr = np.diff(equity) / equity[:-1]
             if np.std(returns_arr) > 0:
-                sharpe = np.mean(returns_arr) / np.std(returns_arr) * np.sqrt(252 * 288)
+                sharpe = np.mean(returns_arr) / np.std(returns_arr) * ann_factor
             else:
                 sharpe = 0.0
 
