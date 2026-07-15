@@ -35,16 +35,19 @@ class PhoenixScalper(IStrategy):
         "ema_slow": 21,
         "rsi_period": 5,
         "rsi_oversold": 38,
-        "rsi_overbought": 74,
-        "adx_threshold": 22,
-        "volume_factor": 1.2,
+        "adx_threshold": 15,
+        "volume_factor": 1.0,
         "short_lookback": 14,
-        "short_volume_mult": 1.845,
-        "short_adx_mult": 1.09,
+        "short_volume_mult": 1.0,
+        "short_adx_mult": 1.0,
         "short_rsi_threshold": 47,
         "sl_min": 0.003,
         "sl_max": 0.005,
         "grace_period": 10,
+    }
+
+    sell_params = {
+        "rsi_overbought": 74,
         "hmm_default_target": 0.421,
         "hmm_range_target": 0.415,
         "hmm_bull_target": 0.732,
@@ -74,15 +77,7 @@ class PhoenixScalper(IStrategy):
     _kalman_cache = {}
     _hmm_update_count = 0
 
-    protections = [
-        {"method": "CooldownPeriod", "stop_duration": 15},
-        {"method": "StoplossGuard", "lookback_period": 360, "trade_limit": 4,
-         "stop_duration": 60, "only_per_pair": False},
-        {"method": "MaxDrawdown", "lookback_period": 1440, "max_allowed_drawdown": 0.30,
-         "stop_duration": 240, "trade_limit": 6},
-        {"method": "LowProfitPairs", "lookback_period": 5, "min_profit_percentage": 0.02,
-         "max_loss_percentage": -0.03, "refresh_period": 720},
-    ]
+    protections = []
 
     def informative_pairs(self):
         pairs = self.dp.current_whitelist()
@@ -233,9 +228,7 @@ class PhoenixScalper(IStrategy):
             dataframe["volume_ratio"] > self.volume_factor.value,
             dataframe["adx"] > self.adx_threshold.value,
             dataframe["plus_di"] > dataframe["minus_di"],
-            dataframe["obv"] > dataframe["obv_ema"],
             dataframe["volume"] > 0,
-            dataframe["hmm_regime_stability"] < 0.5,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_pullback),
@@ -248,9 +241,7 @@ class PhoenixScalper(IStrategy):
             dataframe["close"] > dataframe[f"ema_{self.ema_fast.value}"],
             dataframe["volume_ratio"] > self.volume_factor.value,
             dataframe["adx"] > self.adx_threshold.value,
-            dataframe["plus_di"] > dataframe["minus_di"],
             dataframe["volume"] > 0,
-            dataframe["hmm_regime_stability"] < 0.5,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_rsi),
@@ -263,7 +254,6 @@ class PhoenixScalper(IStrategy):
             dataframe["adx"] > self.adx_threshold.value * 1.2,
             dataframe["close"] > dataframe[f"ema_{self.ema_slow.value}"],
             dataframe["volume"] > 0,
-            dataframe["hmm_regime_stability"] < 0.5,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_breakout),
@@ -278,7 +268,6 @@ class PhoenixScalper(IStrategy):
             dataframe["close"] > dataframe[f"ema_{self.ema_fast.value}"],
             dataframe["volume_ratio"] > self.volume_factor.value,
             dataframe["volume"] > 0,
-            dataframe["hmm_regime_stability"] < 0.5,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_kalman),
@@ -292,13 +281,8 @@ class PhoenixScalper(IStrategy):
             dataframe["close"] < dataframe[f"ema_{self.ema_slow.value}"],
             dataframe["close"] < dataframe["open"],
             dataframe["close"] < dataframe["bb_lower"],
-            dataframe["close"] < dataframe["vwap"],
             dataframe["plus_di"] < dataframe["minus_di"],
             dataframe[f"rsi_{self.rsi_period.value}"] < self.short_rsi_threshold.value,
-            dataframe["macd"] < dataframe["macdsignal"],
-            dataframe["macdhist"] < 0,
-            dataframe["bb_width"] > dataframe["bb_width_sma"],
-            dataframe["obv"] < dataframe["obv_ema"],
             dataframe["volume"] > 0,
         ]
         dataframe.loc[
@@ -316,7 +300,6 @@ class PhoenixScalper(IStrategy):
             dataframe["adx"] > self.adx_threshold.value,
             dataframe["plus_di"] < dataframe["minus_di"],
             dataframe["volume"] > 0,
-            dataframe["hmm_regime_stability"] < 0.5,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_short_rally),
@@ -381,15 +364,6 @@ class PhoenixScalper(IStrategy):
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
                            time_in_force: str, current_time: datetime, entry_tag: str | None,
                            side: str, **kwargs) -> bool:
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        if dataframe is not None and len(dataframe) > 0:
-            last = dataframe.iloc[-1]
-            hmm_p_bull = last.get('hmm_p_bull', 0.33)
-            hmm_p_bear = last.get('hmm_p_bear', 0.33)
-            if side == 'long' and hmm_p_bull <= hmm_p_bear:
-                return False
-            if side == 'short' and hmm_p_bear <= hmm_p_bull:
-                return False
         return True
 
     def confirm_trade_exit(self, pair: str, trade, order_type: str, amount: float,

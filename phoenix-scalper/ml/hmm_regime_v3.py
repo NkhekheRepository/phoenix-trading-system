@@ -6,16 +6,7 @@ logger = logging.getLogger(__name__)
 
 
 class RegimeDetector:
-    """
-    3-state Hidden Markov Model for market regime detection.
-
-    States:
-      0 = Trending Bull (high mu, low sigma)
-      1 = Ranging (mu=0, medium sigma)
-      2 = Trending Bear (negative mu, high sigma)
-
-    Observations: [log_returns, realized_vol, volume_change]
-    """
+    n_states = 3
 
     def __init__(self, n_states=3, n_iter=100):
         self.n_states = n_states
@@ -207,10 +198,9 @@ def compute_hmm_features(
         full_volume_change: Full series for prediction
 
     Returns:
-        dict of feature arrays aligned to full_returns length (or returns length)
+        dict of feature arrays aligned to full_returns length
     """
     train_n = len(returns)
-
     obs = np.column_stack([returns, vol, volume_change])
 
     max_train = min(1000, train_n)
@@ -239,8 +229,7 @@ def compute_hmm_features(
     trend_strength = np.zeros(n)
 
     vol_col = 1
-    mu_col = 1
-    sigma_col = (0, 0)
+    mu_col = 1  # match V2: uses mu_col for volatility normalization
 
     for i in range(n):
         regime_stability[i] = 1.0 - np.sum(regime_probs[i] ** 2)
@@ -253,7 +242,7 @@ def compute_hmm_features(
             transition_risk[i] = hmm.A[2, 0] + hmm.A[2, 1]
 
         vol_regime[i] = predict_obs[i, vol_col] / (abs(hmm.mu[regime[i], mu_col]) + 1e-10)
-        trend_strength[i] = abs(hmm.mu[regime[i], 0]) / (abs(hmm.Sigma[regime[i], sigma_col[0], sigma_col[0]]) + 1e-10)
+        trend_strength[i] = abs(hmm.mu[regime[i], 0]) / (abs(hmm.Sigma[regime[i], mu_col, mu_col]) + 1e-10)
 
     return {
         "hmm_regime": regime,

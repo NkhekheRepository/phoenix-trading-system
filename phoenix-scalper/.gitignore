@@ -1,0 +1,48 @@
+# Config with secrets
+config.json
+.env
+
+# Data
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# SQLite databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Hyperopt results
+hyperopt_results/
+hyperopt.lock
+
+# Backtest results
+backtest_results/
+
+# Plots
+plot/
+
+# Logs
+logs/
+*.log
+
+# Notebooks
+notebooks/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+*.orig
