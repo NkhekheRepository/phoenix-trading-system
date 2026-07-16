@@ -1,7 +1,6 @@
 import talib.abstract as ta
 from datetime import datetime, timezone, date
 from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter, merge_informative_pair
-from freqtrade.persistence import Trade
 from pandas import DataFrame
 from functools import reduce
 import numpy as np
@@ -37,8 +36,6 @@ class PhoenixScalperV2(IStrategy):
     use_custom_stoploss = True
 
     trailing_stop = False
-
-    LEVERAGE = 30
 
     max_open_trades = 5
 
@@ -86,8 +83,6 @@ class PhoenixScalperV2(IStrategy):
     hmm_default_target = DecimalParameter(0.35, 0.80, default=0.55, space="sell")
     hmm_range_target = DecimalParameter(0.25, 0.55, default=0.35, space="sell")
     hmm_bull_target = DecimalParameter(0.50, 1.20, default=0.80, space="sell")
-    score_threshold = IntParameter(35, 80, default=45, space="buy")
-    score_high_threshold = IntParameter(45, 75, default=55, space="buy")
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -146,19 +141,18 @@ class PhoenixScalperV2(IStrategy):
             self._ensure_monitor()
             if self._monitor is None:
                 return
+            self._monitor.flush()
+
             open_trades = []
-            try:
-                all_trades = Trade.get_trades_proxy()
-                for trade in all_trades:
-                    if trade.is_open:
-                        profit = trade.calc_profit_ratio(rate=trade.open_rate)
+            if hasattr(self, 'trade_handler') and hasattr(self.trade_handler, 'trades'):
+                for trade in self.trade_handler.trades:
+                    if hasattr(trade, 'is_open') and trade.is_open:
+                        profit = trade.calc_profit_ratio()
                         open_trades.append({
                             "pair": trade.pair,
                             "rate": trade.open_rate,
                             "profit": f"{profit * 100:.2f}%" if profit else "0.00%",
                         })
-            except Exception as e:
-                logger.warning(f"Failed to fetch open trades: {e}")
 
             try:
                 balance = self.wallets.get_total_stake_amount() if hasattr(self, 'wallets') else 0
@@ -166,69 +160,25 @@ class PhoenixScalperV2(IStrategy):
             except Exception:
                 risk_state = self._risk_governor.get_state()
 
-            total_trades_db = 0
-            total_profit = 0.0
-            win_count = 0
-            loss_count = 0
-            try:
-                all_closed = Trade.get_trades_proxy(is_open=False)
-                total_trades_db = len(all_closed)
-                for t in all_closed:
-                    pnl = t.close_profit_abs or 0
-                    total_profit += pnl
-                    if t.close_profit and t.close_profit > 0:
-                        win_count += 1
-                    elif t.close_profit and t.close_profit < 0:
-                        loss_count += 1
-            except Exception as e:
-                logger.warning(f"Failed to query trades for summary: {e}")
-
-            memory_mb = 0
-            try:
-                with open("/proc/self/status") as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            memory_mb = int(line.split()[1]) // 1024
-                            break
-            except Exception:
-                pass
-
-            exchange_ok = True
-            try:
-                if hasattr(self, 'exchange') and hasattr(self.exchange, 'get_status'):
-                    exchange_ok = self.exchange.get_status().get('status', 'connected') == 'connected'
-            except Exception:
-                exchange_ok = False
-
             date_str = current_time.strftime("%Y-%m-%d")
             self._monitor.send_daily_summary(
                 date_str=date_str,
                 regime=self._last_regime_str if hasattr(self, "_last_regime_str") else "N/A",
                 risk_level=risk_state.level.value,
                 exposure=risk_state.current_exposure,
-                leverage=self.LEVERAGE,
+                leverage=50,
                 active_trades=open_trades,
                 max_trades=self.max_open_trades,
                 bot_name="PhoenixScalperV2",
-                total_trades_db=total_trades_db,
-                total_profit=total_profit,
-                win_count=win_count,
-                loss_count=loss_count,
             )
 
             self._monitor.send_hourly_health({
                 "uptime": str(datetime.now(timezone.utc) - self._start_time).split(".")[0],
-                "total_trades": total_trades_db,
+                "total_trades": self._trade_intel.get_trade_count(),
                 "active_trades": len(open_trades),
-                "memory_mb": memory_mb,
-                "exchange_ok": exchange_ok,
-                "total_profit": total_profit,
-                "win_count": win_count,
-                "loss_count": loss_count,
-                "score_threshold": self.score_threshold.value,
+                "memory_mb": 0,
+                "exchange_ok": True,
             })
-
-            self._monitor.flush()
         except Exception as e:
             logger.warning(f"bot_loop_start error: {e}")
 
@@ -365,15 +315,12 @@ class PhoenixScalperV2(IStrategy):
 
         try:
             regime_result = self._regime_engine.analyze(dataframe)
-            if metadata.get("pair", "").startswith("BTC/"):
-                self._last_regime_str = regime_result.regime.value
+            self._last_regime_str = regime_result.regime.value
         except Exception as e:
             logger.warning(f"RegimeEngine: {e}")
 
         if do_heavy:
             self._feed_concept_drift(dataframe)
-
-        dataframe = self._calculate_entry_score(dataframe)
 
         return dataframe
 
@@ -419,58 +366,6 @@ class PhoenixScalperV2(IStrategy):
         sl_pct = atr_pct * sl_mult
         sl_pct = np.clip(sl_pct, self.sl_min.value, self.sl_max.value)
         return sl_pct
-
-    def _calculate_entry_score(self, dataframe: DataFrame) -> DataFrame:
-        rsi_col = f"rsi_{self.rsi_period.value}"
-        ema_f = f"ema_{self.ema_fast.value}"
-        ema_s = f"ema_{self.ema_slow.value}"
-
-        hmm_bull = np.minimum(dataframe["hmm_p_bull"].values / 0.6, 1.0) * 20
-        trend_str = np.minimum(dataframe["adx"].values / 40.0, 1.0) * 15
-        kalman_c = np.minimum(dataframe["kf_confidence"].values / 0.8, 1.0) * 10
-        di_diff = dataframe["plus_di"].values - dataframe["minus_di"].values
-        directional = np.clip(di_diff / 20.0 + 0.5, 0, 1) * 10
-        mom_a = np.minimum(np.maximum(dataframe["kf_trend_acceleration"].values, 0), 1)
-        mom_p = np.minimum(np.maximum(dataframe["kf_price_momentum"].values, 0), 1)
-        momentum = (mom_a + mom_p) / 2.0 * 10
-        volume = np.minimum(dataframe["volume_ratio"].values / 3.0, 1.0) * 10
-        stability = (1.0 - np.minimum(dataframe["hmm_regime_stability"].values / 0.5, 1.0)) * 10
-        rsi_v = dataframe[rsi_col].values
-        rsi_s = np.maximum(0, 1.0 - np.abs(rsi_v - 45) / 25.0) * 5
-        ema_dist = np.abs(dataframe["close"].values / dataframe[ema_s].values - 1.0)
-        pullback = np.maximum(0, 1.0 - ema_dist / 0.02) * 5
-        trend_al = (
-            (dataframe["close"].values > dataframe[ema_f].values).astype(float) +
-            (dataframe["close"].values > dataframe[ema_s].values).astype(float) +
-            (dataframe["close"].values > dataframe["ema_50"].values).astype(float)
-        ) / 3.0 * 5
-
-        dataframe["signal_score"] = (
-            hmm_bull + trend_str + kalman_c + directional +
-            momentum + volume + stability + rsi_s + pullback + trend_al
-        )
-
-        hmm_bear = np.minimum(dataframe["hmm_p_bear"].values / 0.6, 1.0) * 20
-        di_s = dataframe["minus_di"].values - dataframe["plus_di"].values
-        directional_s = np.clip(di_s / 20.0 + 0.5, 0, 1) * 10
-        mom_a_s = np.minimum(np.maximum(-dataframe["kf_trend_acceleration"].values, 0), 1)
-        mom_p_s = np.minimum(np.maximum(-dataframe["kf_price_momentum"].values, 0), 1)
-        momentum_s = (mom_a_s + mom_p_s) / 2.0 * 10
-        rsi_s_s = np.maximum(0, 1.0 - np.abs(rsi_v - 70) / 20.0) * 5
-        bk_dist = np.abs(dataframe["close"].values / dataframe[ema_s].values - 1.0)
-        breakdown = np.maximum(0, 1.0 - bk_dist / 0.02) * 5
-        bear_al = (
-            (dataframe["close"].values < dataframe[ema_f].values).astype(float) +
-            (dataframe["close"].values < dataframe[ema_s].values).astype(float) +
-            (dataframe["close"].values < dataframe["ema_50"].values).astype(float)
-        ) / 3.0 * 5
-
-        dataframe["short_score"] = (
-            hmm_bear + trend_str + kalman_c + directional_s +
-            momentum_s + volume + stability + rsi_s_s + breakdown + bear_al
-        )
-
-        return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         rsi = f"rsi_{self.rsi_period.value}"
@@ -576,37 +471,6 @@ class PhoenixScalperV2(IStrategy):
             ["enter_short", "enter_tag"]
         ] = (1, "short_bear_momentum")
 
-        threshold = self.score_threshold.value
-        dataframe.loc[
-            (dataframe["enter_long"] == 1) & (dataframe["signal_score"] < threshold),
-            ["enter_long", "enter_tag"]
-        ] = (0, None)
-        dataframe.loc[
-            (dataframe["enter_short"] == 1) & (dataframe["short_score"] < threshold),
-            ["enter_short", "enter_tag"]
-        ] = (0, None)
-
-        high_th = self.score_high_threshold.value
-        no_entry = (dataframe["enter_long"].fillna(0) == 0) & (dataframe["enter_short"].fillna(0) == 0)
-        high_long = no_entry & (dataframe["signal_score"] >= high_th) & (dataframe["signal_score"] > dataframe["short_score"])
-        high_short = no_entry & (dataframe["short_score"] >= high_th) & (dataframe["short_score"] > dataframe["signal_score"])
-        dataframe.loc[high_long, ["enter_long", "enter_tag"]] = (1, "score_override_long")
-        dataframe.loc[high_short, ["enter_short", "enter_tag"]] = (1, "score_override_short")
-
-        long_pass = (dataframe["enter_long"] == 1)
-        if long_pass.any():
-            dataframe.loc[long_pass, "enter_tag"] = (
-                dataframe.loc[long_pass, "enter_tag"].astype(str) +
-                " [" + dataframe.loc[long_pass, "signal_score"].astype(int).astype(str) + "]"
-            )
-
-        short_pass = (dataframe["enter_short"] == 1)
-        if short_pass.any():
-            dataframe.loc[short_pass, "enter_tag"] = (
-                dataframe.loc[short_pass, "enter_tag"].astype(str) +
-                " [" + dataframe.loc[short_pass, "short_score"].astype(int).astype(str) + "]"
-            )
-
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -626,15 +490,13 @@ class PhoenixScalperV2(IStrategy):
                         after_fill: bool, **kwargs) -> float:
         if after_fill:
             return -0.99
-        lev = trade.leverage
         elapsed = (current_time - trade.open_date_utc).total_seconds() / 60
         if elapsed < 5:
-            max_eq_loss = 0.75
+            time_stop = -0.80
         elif elapsed < 30:
-            max_eq_loss = 0.50
+            time_stop = -0.60
         else:
-            max_eq_loss = 0.30
-        time_stop = -(max_eq_loss)
+            time_stop = -0.40
         if current_profit > 0.02:
             trail_offset = 0.03
             if current_profit > 0.05:
@@ -642,14 +504,14 @@ class PhoenixScalperV2(IStrategy):
             if current_profit > 0.10:
                 trail_offset = 0.01
             trail_stop = -(current_profit - trail_offset)
-            trail_stop = max(trail_stop, -(0.02))
+            trail_stop = max(trail_stop, -0.02)
             return max(trail_stop, time_stop)
         return time_stop
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: str | None,
                  side: str, **kwargs) -> float:
-        return float(self.LEVERAGE)
+        return 50.0
 
     def custom_stake_amount(self, pair: str, current_time: datetime, current_rate: float,
                             proposed_stake: float, min_stake: float, max_stake: float,
@@ -669,10 +531,19 @@ class PhoenixScalperV2(IStrategy):
             logger.info(f"Loss breaker active ({self._consecutive_losses} consecutive), rejecting {pair} {side}")
             return False
 
-        regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
-        if regime_str in ("strong_bear", "low_volatility", "weak_bull"):
-            logger.info(f"Regime {regime_str} blocked, rejecting {pair} {side}")
-            return False
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        regime_str = "unknown"
+        if dataframe is not None and len(dataframe) > 0:
+            last = dataframe.iloc[-1]
+            hmm_p_bull = last.get('hmm_p_bull', 0.5)
+            hmm_p_bear = last.get('hmm_p_bear', 0.2)
+            if side == 'long' and hmm_p_bear > hmm_p_bull:
+                logger.info(f"Regime filter rejected long {pair}: bear={hmm_p_bear:.2f} > bull={hmm_p_bull:.2f}")
+                return False
+            if side == 'short' and hmm_p_bull > hmm_p_bear:
+                logger.info(f"Regime filter rejected short {pair}: bull={hmm_p_bull:.2f} > bear={hmm_p_bear:.2f}")
+                return False
+            regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
 
         trade_id = self._trade_intel.start_trade(
             pair=pair, side=side, leverage=self.leverage(pair, current_time, rate, 0, 0, entry_tag, side),
@@ -685,7 +556,7 @@ class PhoenixScalperV2(IStrategy):
     def confirm_trade_exit(self, pair: str, trade, order_type: str, amount: float,
                           rate: float, time_in_force: str, exit_reason: str,
                           current_time: datetime, **kwargs) -> bool:
-        profit_pct = trade.calc_profit_ratio(rate=rate) * 100
+        profit_pct = ((rate - trade.open_rate) / trade.open_rate) * 100 * trade.leverage
 
         today = current_time.date()
         if self._current_trading_day != today:
@@ -712,21 +583,13 @@ class PhoenixScalperV2(IStrategy):
             success_factors.append("trade_won")
             success_factors.append(f"exit_reason:{exit_reason}")
 
-        entry_time = trade.open_date_utc if hasattr(trade, 'open_date_utc') else trade.open_date
         self._trade_intel.close_trade(
-            trade_id=str(trade.id),
+            trade_id=trade.id,
             exit_price=rate,
             profit_pct=profit_pct,
             exit_reason=exit_reason,
             failure_factors=failure_factors,
             success_factors=success_factors,
-            pair=trade.pair,
-            side="short" if trade.is_short else "long",
-            entry_tag=trade.enter_tag or "",
-            leverage=trade.leverage,
-            entry_price=trade.open_rate,
-            regime=self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown",
-            entry_time=entry_time,
         )
 
         if not self._ml_baseline_set:
