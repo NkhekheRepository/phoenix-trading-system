@@ -84,8 +84,6 @@ class PhoenixScalperV3(IStrategy):
     hmm_default_target = DecimalParameter(0.35, 0.80, default=0.55, space="sell")
     hmm_range_target = DecimalParameter(0.25, 0.55, default=0.35, space="sell")
     hmm_bull_target = DecimalParameter(0.50, 1.20, default=0.80, space="sell")
-    score_threshold = IntParameter(35, 80, default=45, space="buy")
-    score_high_threshold = IntParameter(45, 75, default=55, space="buy")
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -118,6 +116,7 @@ class PhoenixScalperV3(IStrategy):
         self._drift_ref_set = False
         self._drift_ref_buffer = {}
         self._monitor = None
+        self._drift_mode = "normal"
 
     def _ensure_monitor(self):
         if self._monitor is None and hasattr(self, 'dp') and self.dp is not None:
@@ -141,6 +140,37 @@ class PhoenixScalperV3(IStrategy):
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
         try:
+            regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
+            regime_max = {"strong_bear": 10, "weak_bear": 10, "low_volatility": 7, "weak_bull": 3, "strong_bull": 0}
+            new_max = regime_max.get(regime_str, 5)
+
+            drift_summary = {}
+            try:
+                drift_summary = self._concept_drift.get_drift_summary()
+            except Exception:
+                pass
+            max_psi = max((s.get("current_psi", 0) for s in drift_summary.values()), default=0)
+            if max_psi > 2.0:
+                self._drift_mode = "critical"
+                drift_factor = {"strong_bear": 3, "weak_bear": 3, "low_volatility": 3, "weak_bull": 3, "strong_bull": 0}
+                new_max = drift_factor.get(regime_str, 3)
+                self.score_threshold.value = 50
+                self.score_high_threshold.value = 60
+            elif max_psi > 0.5:
+                self._drift_mode = "warning"
+                drift_factor = {"strong_bear": 7, "weak_bear": 7, "low_volatility": 5, "weak_bull": 3, "strong_bull": 0}
+                new_max = drift_factor.get(regime_str, 5)
+                self.score_threshold.value = 48
+                self.score_high_threshold.value = 58
+            else:
+                self._drift_mode = "normal"
+                self.score_threshold.value = 45
+                self.score_high_threshold.value = 55
+
+            if new_max != self.max_open_trades:
+                self.max_open_trades = new_max
+                logger.info(f"Regime {regime_str} drift={self._drift_mode}: max_open_trades -> {new_max}")
+
             self._ensure_monitor()
             if self._monitor is None:
                 return
@@ -223,7 +253,7 @@ class PhoenixScalperV3(IStrategy):
                 "total_profit": total_profit,
                 "win_count": win_count,
                 "loss_count": loss_count,
-                "score_threshold": self.score_threshold.value,
+                "drift_mode": self._drift_mode,
             })
 
             self._monitor.flush()
@@ -366,14 +396,11 @@ class PhoenixScalperV3(IStrategy):
 
         try:
             regime_result = self._regime_engine.analyze(dataframe)
-            if metadata.get("pair", "").startswith("BTC/"):
-                self._last_regime_str = regime_result.regime.value
+            self._last_regime_str = regime_result.regime.value
         except Exception as e:
             logger.warning(f"RegimeEngine: {e}")
 
         self._feed_concept_drift(dataframe)
-
-        dataframe = self._calculate_entry_score(dataframe)
 
         return dataframe
 
@@ -419,58 +446,6 @@ class PhoenixScalperV3(IStrategy):
         sl_pct = atr_pct * sl_mult
         sl_pct = np.clip(sl_pct, self.sl_min.value, self.sl_max.value)
         return sl_pct
-
-    def _calculate_entry_score(self, dataframe: DataFrame) -> DataFrame:
-        rsi_col = f"rsi_{self.rsi_period.value}"
-        ema_f = f"ema_{self.ema_fast.value}"
-        ema_s = f"ema_{self.ema_slow.value}"
-
-        hmm_bull = np.minimum(dataframe["hmm_p_bull"].values / 0.6, 1.0) * 20
-        trend_str = np.minimum(dataframe["adx"].values / 40.0, 1.0) * 15
-        kalman_c = np.minimum(dataframe["kf_confidence"].values / 0.8, 1.0) * 10
-        di_diff = dataframe["plus_di"].values - dataframe["minus_di"].values
-        directional = np.clip(di_diff / 20.0 + 0.5, 0, 1) * 10
-        mom_a = np.minimum(np.maximum(dataframe["kf_trend_acceleration"].values, 0), 1)
-        mom_p = np.minimum(np.maximum(dataframe["kf_price_momentum"].values, 0), 1)
-        momentum = (mom_a + mom_p) / 2.0 * 10
-        volume = np.minimum(dataframe["volume_ratio"].values / 3.0, 1.0) * 10
-        stability = (1.0 - np.minimum(dataframe["hmm_regime_stability"].values / 0.5, 1.0)) * 10
-        rsi_v = dataframe[rsi_col].values
-        rsi_s = np.maximum(0, 1.0 - np.abs(rsi_v - 45) / 25.0) * 5
-        ema_dist = np.abs(dataframe["close"].values / dataframe[ema_s].values - 1.0)
-        pullback = np.maximum(0, 1.0 - ema_dist / 0.02) * 5
-        trend_al = (
-            (dataframe["close"].values > dataframe[ema_f].values).astype(float) +
-            (dataframe["close"].values > dataframe[ema_s].values).astype(float) +
-            (dataframe["close"].values > dataframe["ema_50"].values).astype(float)
-        ) / 3.0 * 5
-
-        dataframe["signal_score"] = (
-            hmm_bull + trend_str + kalman_c + directional +
-            momentum + volume + stability + rsi_s + pullback + trend_al
-        )
-
-        hmm_bear = np.minimum(dataframe["hmm_p_bear"].values / 0.6, 1.0) * 20
-        di_s = dataframe["minus_di"].values - dataframe["plus_di"].values
-        directional_s = np.clip(di_s / 20.0 + 0.5, 0, 1) * 10
-        mom_a_s = np.minimum(np.maximum(-dataframe["kf_trend_acceleration"].values, 0), 1)
-        mom_p_s = np.minimum(np.maximum(-dataframe["kf_price_momentum"].values, 0), 1)
-        momentum_s = (mom_a_s + mom_p_s) / 2.0 * 10
-        rsi_s_s = np.maximum(0, 1.0 - np.abs(rsi_v - 70) / 20.0) * 5
-        bk_dist = np.abs(dataframe["close"].values / dataframe[ema_s].values - 1.0)
-        breakdown = np.maximum(0, 1.0 - bk_dist / 0.02) * 5
-        bear_al = (
-            (dataframe["close"].values < dataframe[ema_f].values).astype(float) +
-            (dataframe["close"].values < dataframe[ema_s].values).astype(float) +
-            (dataframe["close"].values < dataframe["ema_50"].values).astype(float)
-        ) / 3.0 * 5
-
-        dataframe["short_score"] = (
-            hmm_bear + trend_str + kalman_c + directional_s +
-            momentum_s + volume + stability + rsi_s_s + breakdown + bear_al
-        )
-
-        return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         rsi = f"rsi_{self.rsi_period.value}"
@@ -579,37 +554,6 @@ class PhoenixScalperV3(IStrategy):
             ["enter_short", "enter_tag"]
         ] = (1, "short_bear_momentum")
 
-        threshold = self.score_threshold.value
-        dataframe.loc[
-            (dataframe["enter_long"] == 1) & (dataframe["signal_score"] < threshold),
-            ["enter_long", "enter_tag"]
-        ] = (0, None)
-        dataframe.loc[
-            (dataframe["enter_short"] == 1) & (dataframe["short_score"] < threshold),
-            ["enter_short", "enter_tag"]
-        ] = (0, None)
-
-        high_th = self.score_high_threshold.value
-        no_entry = (dataframe["enter_long"].fillna(0) == 0) & (dataframe["enter_short"].fillna(0) == 0)
-        high_long = no_entry & (dataframe["signal_score"] >= high_th) & (dataframe["signal_score"] > dataframe["short_score"])
-        high_short = no_entry & (dataframe["short_score"] >= high_th) & (dataframe["short_score"] > dataframe["signal_score"])
-        dataframe.loc[high_long, ["enter_long", "enter_tag"]] = (1, "score_override_long")
-        dataframe.loc[high_short, ["enter_short", "enter_tag"]] = (1, "score_override_short")
-
-        long_pass = (dataframe["enter_long"] == 1)
-        if long_pass.any():
-            dataframe.loc[long_pass, "enter_tag"] = (
-                dataframe.loc[long_pass, "enter_tag"].astype(str) +
-                " [" + dataframe.loc[long_pass, "signal_score"].astype(int).astype(str) + "]"
-            )
-
-        short_pass = (dataframe["enter_short"] == 1)
-        if short_pass.any():
-            dataframe.loc[short_pass, "enter_tag"] = (
-                dataframe.loc[short_pass, "enter_tag"].astype(str) +
-                " [" + dataframe.loc[short_pass, "short_score"].astype(int).astype(str) + "]"
-            )
-
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -637,15 +581,15 @@ class PhoenixScalperV3(IStrategy):
             max_eq_loss = 0.30
         else:
             max_eq_loss = 0.20
-        time_stop = -(max_eq_loss)
+        time_stop = -(max_eq_loss / lev)
         if current_profit > 0.02:
-            trail_offset = 0.03
+            trail_offset = 0.03 / lev
             if current_profit > 0.05:
-                trail_offset = 0.02
+                trail_offset = 0.02 / lev
             if current_profit > 0.10:
-                trail_offset = 0.01
+                trail_offset = 0.01 / lev
             trail_stop = -(current_profit - trail_offset)
-            trail_stop = max(trail_stop, -(0.02))
+            trail_stop = max(trail_stop, -(0.02 / lev))
             return max(trail_stop, time_stop)
         return time_stop
 

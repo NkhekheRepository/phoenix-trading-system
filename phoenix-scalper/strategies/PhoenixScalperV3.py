@@ -84,6 +84,8 @@ class PhoenixScalperV3(IStrategy):
     hmm_default_target = DecimalParameter(0.35, 0.80, default=0.55, space="sell")
     hmm_range_target = DecimalParameter(0.25, 0.55, default=0.35, space="sell")
     hmm_bull_target = DecimalParameter(0.50, 1.20, default=0.80, space="sell")
+    score_threshold = IntParameter(35, 80, default=55, space="buy")
+    score_high_threshold = IntParameter(45, 75, default=60, space="buy")
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
