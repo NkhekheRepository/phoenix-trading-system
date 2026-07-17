@@ -156,18 +156,18 @@ class PhoenixScalperV3(IStrategy):
                 self._drift_mode = "critical"
                 drift_factor = {"strong_bear": 3, "weak_bear": 3, "low_volatility": 3, "weak_bull": 3, "strong_bull": 0}
                 new_max = drift_factor.get(regime_str, 3)
-                self.score_threshold.value = 50
-                self.score_high_threshold.value = 60
+                self.score_threshold.value = 60
+                self.score_high_threshold.value = 65
             elif max_psi > 0.5:
                 self._drift_mode = "warning"
                 drift_factor = {"strong_bear": 7, "weak_bear": 7, "low_volatility": 5, "weak_bull": 3, "strong_bull": 0}
                 new_max = drift_factor.get(regime_str, 5)
-                self.score_threshold.value = 48
-                self.score_high_threshold.value = 58
+                self.score_threshold.value = 58
+                self.score_high_threshold.value = 62
             else:
                 self._drift_mode = "normal"
-                self.score_threshold.value = 45
-                self.score_high_threshold.value = 55
+                self.score_threshold.value = 55
+                self.score_high_threshold.value = 60
 
             if new_max != self.max_open_trades:
                 self.max_open_trades = new_max
@@ -566,7 +566,7 @@ class PhoenixScalperV3(IStrategy):
         if current_profit >= 0.10:
             return "mc1_tp_10pct"
         elapsed = (current_time - trade.open_date_utc).total_seconds() / 3600
-        if elapsed > 3:
+        if elapsed > 1:
             return "max_hold_3h"
         return None
 
@@ -618,6 +618,14 @@ class PhoenixScalperV3(IStrategy):
             logger.info(f"Loss breaker active ({self._consecutive_losses} consecutive), rejecting {pair} {side}")
             return False
 
+        import re as _re
+        score_m = _re.search(r'\[(\d+)\]', entry_tag or "")
+        if score_m:
+            sc = int(score_m.group(1))
+            if sc > 59:
+                logger.info(f"Score ceiling: {sc} > 59, rejecting {pair} {side}")
+                return False
+
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         regime_str = "unknown"
         if dataframe is not None and len(dataframe) > 0:
@@ -631,8 +639,8 @@ class PhoenixScalperV3(IStrategy):
                 logger.info(f"Regime filter rejected short {pair}: bull={hmm_p_bull:.2f} > bear={hmm_p_bear:.2f}")
                 return False
             regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
-            if regime_str in ("strong_bull", "low_volatility", "weak_bull"):
-                logger.info(f"Regime {regime_str} blocked, rejecting {pair} {side}")
+            if regime_str not in ("low_volatility", "weak_bull"):
+                logger.info(f"Regime {regime_str} not allowed (v3 allowlist), rejecting {pair} {side}")
                 return False
 
         trade_id = self._trade_intel.start_trade(
