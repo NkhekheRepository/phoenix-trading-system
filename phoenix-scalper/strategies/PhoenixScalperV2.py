@@ -18,6 +18,7 @@ from core.risk_governor import RiskGovernor
 from core.data_quality import DataValidator
 from core.concept_drift import ConceptDriftDetector
 from core.ml_engine import MLEngine
+from core.telegram_ev import register_ev_command
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,19 @@ class PhoenixScalperV2(IStrategy):
                 chat_id=self.config.get("telegram", {}).get("chat_id"),
                 token=self.config.get("telegram", {}).get("token"),
             )
+            self._ensure_ev_command()
+
+    def _ensure_ev_command(self):
+        if not hasattr(self, '_ev_registered') or not self._ev_registered:
+            try:
+                rpc = self.dp._DataProvider__rpc
+                for mod in rpc.registered_modules:
+                    if hasattr(mod, '_app'):
+                        register_ev_command(mod)
+                        self._ev_registered = True
+                        break
+            except Exception as e:
+                logger.warning(f"telegram_ev: could not register /ev: {e}")
 
     def _notify_handler(self, method_name: str, **kwargs):
         self._ensure_monitor()
@@ -143,6 +157,7 @@ class PhoenixScalperV2(IStrategy):
                 logger.warning(f"Monitor notify_{method_name} failed: {e}")
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
+        self._ensure_ev_command()
         try:
             regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
             regime_max = {"strong_bear": 10, "weak_bear": 10, "low_volatility": 7, "weak_bull": 3, "strong_bull": 0}
