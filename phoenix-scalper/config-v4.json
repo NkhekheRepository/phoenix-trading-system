@@ -132,6 +132,23 @@
       "method": "PrecisionFilter"
     }
   ],
+  "telegram": {
+    "enabled": true,
+    "token": "{{TELEGRAM_BOT_TOKEN}}",
+    "chat_id": "{{TELEGRAM_CHAT_ID}}",
+    "notification_settings": {
+      "status": "on",
+      "warning": "on",
+      "startup": "on",
+      "entry": "on",
+      "entry_fill": "on",
+      "exit": "on",
+      "exit_fill": "on",
+      "exit_cancel": "on",
+      "protection_trigger": "on",
+      "protection_trigger_global": "on"
+    }
+  },
   "api_server": {
     "enabled": true,
     "listen_port": 8084,
