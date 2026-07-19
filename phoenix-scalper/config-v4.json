@@ -1,0 +1,143 @@
+{
+  "cancel_open_orders_on_exit": true,
+  "exchange": {
+    "name": "binance",
+    "key": "{{EXCHANGE_API_KEY}}",
+    "secret": "{{EXCHANGE_API_SECRET}}",
+    "password": "",
+    "ccxt_config": {
+      "timeout": 120000,
+      "enableRateLimit": true
+    },
+    "ccxt_async_config": {
+      "enableRateLimit": true,
+      "timeout": 120000
+    },
+    "pair_whitelist": [
+      "ADA/USDT:USDT",
+      "ATOM/USDT:USDT",
+      "AVAX/USDT:USDT",
+      "BNB/USDT:USDT",
+      "BTC/USDT:USDT",
+      "CRV/USDT:USDT",
+      "DOGE/USDT:USDT",
+      "DOT/USDT:USDT",
+      "EGLD/USDT:USDT",
+      "ETH/USDT:USDT",
+      "FLOW/USDT:USDT",
+      "INJ/USDT:USDT",
+      "LDO/USDT:USDT",
+      "LINK/USDT:USDT",
+      "LTC/USDT:USDT",
+      "NEAR/USDT:USDT",
+      "OP/USDT:USDT",
+      "SOL/USDT:USDT",
+      "TIA/USDT:USDT",
+      "UNI/USDT:USDT",
+      "VET/USDT:USDT",
+      "XRP/USDT:USDT"
+    ]
+  },
+  "trading_mode": "futures",
+  "margin_mode": "isolated",
+  "liquidation_buffer": 0.15,
+  "stake_currency": "USDT",
+  "stake_amount": "unlimited",
+  "max_open_trades": 5,
+  "dry_run": true,
+  "dry_run_wallet": 100,
+  "process_only_new_candles": false,
+  "ignore_buying_expired_candle_after_minutes": 5,
+  "disable_overfitting_checks": true,
+  "initial_state": "running",
+  "enable_protections": true,
+  "extended_keep_stopped_orders_time": 30,
+  "check_handles": true,
+  "order_types": {
+    "entry": "market",
+    "exit": "market",
+    "stoploss": "market",
+    "stoploss_on_exchange": false,
+    "stoploss_on_exchange_interval": 60
+  },
+  "entry_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "other",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList",
+      "pairs": [
+        "ADA/USDT:USDT",
+        "ATOM/USDT:USDT",
+        "AVAX/USDT:USDT",
+        "BNB/USDT:USDT",
+        "BTC/USDT:USDT",
+        "CRV/USDT:USDT",
+        "DOGE/USDT:USDT",
+        "DOT/USDT:USDT",
+        "EGLD/USDT:USDT",
+        "ETH/USDT:USDT",
+        "FLOW/USDT:USDT",
+        "INJ/USDT:USDT",
+        "LDO/USDT:USDT",
+        "LINK/USDT:USDT",
+        "LTC/USDT:USDT",
+        "NEAR/USDT:USDT",
+        "OP/USDT:USDT",
+        "SOL/USDT:USDT",
+        "TIA/USDT:USDT",
+        "UNI/USDT:USDT",
+        "VET/USDT:USDT",
+        "XRP/USDT:USDT"
+      ]
+    }
+  ],
+  "pairlist_process": [
+    {
+      "method": "PriceFilter",
+      "low_price_ratio": 0.01
+    },
+    {
+      "method": "SpreadFilter",
+      "max_spread_ratio": 0.005
+    },
+    {
+      "method": "RangeStabilityFilter",
+      "lookback_days": 10,
+      "min_rate_of_change": 0.02,
+      "refresh_period": 1440
+    },
+    {
+      "method": "AgeFilter",
+      "min_days_listed": 10
+    },
+    {
+      "method": "PrecisionFilter"
+    }
+  ],
+  "api_server": {
+    "enabled": true,
+    "listen_port": 8084,
+    "listen_ip_address": "0.0.0.0",
+    "username": "freqtrader",
+    "password": "freqtrader"
+  },
+  "strategy": "PhoenixScalperV4"
+}
