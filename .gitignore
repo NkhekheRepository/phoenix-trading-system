@@ -1,5 +1,39 @@
 backups/
 *.swp
 *.swo
+
+# Secrets
 phoenix-scalper-v3/config.json
 phoenix-scalper-v3/.env
+phoenix-scalper/config-v2.1.json
+phoenix-scalper/config-v3.1.json
+phoenix-scalper/config-v4.json
+phoenix-scalper/config-v5-btc.json
+phoenix-scalper/.env
+
+# Data
+phoenix-scalper/user_data/
+phoenix-scalper/data/
+phoenix30/data/
+
+# Databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

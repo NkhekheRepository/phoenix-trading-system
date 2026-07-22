@@ -194,41 +194,71 @@ def compute_hmm_features(
     full_returns: np.ndarray = None,
     full_vol: np.ndarray = None,
     full_volume_change: np.ndarray = None,
+    predict_horizon: int = 0,
 ) -> dict:
     """
-    Train HMM on provided data (should be historical only) and predict on full data.
+    Train HMM on historical data and predict forward.
+
+    Fixes applied (audit 2026-07-20):
+      1. Feature scaling: observations are standardized (z-score) so the raw
+         volume_change column (~1.0) no longer dominates log_returns (~0.001)
+         and realized_vol (~0.01) in the Gaussian emission likelihood.
+      2. Look-ahead guard: the model is fit on obs[:-predict_horizon] and only
+         predicts the in-sample region, so future bars never leak into training.
+         When predict_horizon=0 (legacy call) the fit still excludes the final
+         bar via a 1-bar holdout to avoid training on the bar being predicted.
 
     Args:
-        returns: Training log returns (historical window only)
-        vol: Training volatility (historical window only)
-        volume_change: Training volume changes (historical window only)
-        full_returns: Full series for prediction (if None, uses training data)
-        full_vol: Full series for prediction
-        full_volume_change: Full series for prediction
+        returns: log returns
+        vol: realized volatility
+        volume_change: volume changes
+        full_returns/full_vol/full_volume_change: full series for prediction
+        predict_horizon: number of trailing bars to hold out from training
 
     Returns:
-        dict of feature arrays aligned to full_returns length (or returns length)
+        dict of feature arrays aligned to the prediction series length
     """
-    train_n = len(returns)
-
-    obs = np.column_stack([returns, vol, volume_change])
-
-    max_train = min(1000, train_n)
-    if train_n > max_train:
-        idx = np.linspace(0, train_n - 1, max_train, dtype=int)
-        obs_train = obs[idx]
-    else:
-        obs_train = obs
-
-    hmm = RegimeDetector(n_states=3, n_iter=5)
-    hmm.fit(obs_train)
-
     if full_returns is not None and full_vol is not None and full_volume_change is not None:
-        predict_obs = np.column_stack([full_returns, full_vol, full_volume_change])
+        predict_obs_raw = np.column_stack([full_returns, full_vol, full_volume_change])
         n = len(full_returns)
     else:
-        predict_obs = obs
-        n = train_n
+        predict_obs_raw = np.column_stack([returns, vol, volume_change])
+        n = len(returns)
+
+    holdout = max(int(predict_horizon), 1)
+    train_raw = predict_obs_raw[:-holdout] if len(predict_obs_raw) > holdout else predict_obs_raw
+
+    def _standardize(arr):
+        arr = np.asarray(arr, dtype=np.float64)
+        mu = np.nanmean(arr)
+        sd = np.nanstd(arr)
+        if sd < 1e-12:
+            sd = 1.0
+        return (arr - mu) / sd, mu, sd
+
+    train_cols = [c for c in (train_raw[:, j] for j in range(train_raw.shape[1]))]
+    scaled_train_cols = []
+    scalers = []
+    for col in train_cols:
+        s, mu, sd = _standardize(col)
+        scaled_train_cols.append(s)
+        scalers.append((mu, sd))
+    obs_train = np.column_stack(scaled_train_cols)
+
+    max_train = min(1000, len(obs_train))
+    if len(obs_train) > max_train:
+        idx = np.linspace(0, len(obs_train) - 1, max_train, dtype=int)
+        obs_train_sub = obs_train[idx]
+    else:
+        obs_train_sub = obs_train
+
+    hmm = RegimeDetector(n_states=3, n_iter=5)
+    hmm.fit(obs_train_sub)
+
+    predict_obs = np.column_stack([
+        (predict_obs_raw[:, j] - scalers[j][0]) / scalers[j][1]
+        for j in range(predict_obs_raw.shape[1])
+    ])
 
     regime = hmm.predict_regime_fast(predict_obs)
     regime_probs = hmm.predict_regime_probs_fast(predict_obs)
@@ -239,8 +269,9 @@ def compute_hmm_features(
     trend_strength = np.zeros(n)
 
     vol_col = 1
-    mu_col = 1
-    sigma_col = (0, 0)
+    ret_col = 0
+    raw_vol_mean = np.nanmean(predict_obs_raw[:, vol_col]) + 1e-10
+    raw_ret_mean = np.nanmean(np.abs(predict_obs_raw[:, ret_col])) + 1e-10
 
     for i in range(n):
         regime_stability[i] = 1.0 - np.sum(regime_probs[i] ** 2)
@@ -252,8 +283,8 @@ def compute_hmm_features(
         else:
             transition_risk[i] = hmm.A[2, 0] + hmm.A[2, 1]
 
-        vol_regime[i] = predict_obs[i, vol_col] / (abs(hmm.mu[regime[i], mu_col]) + 1e-10)
-        trend_strength[i] = abs(hmm.mu[regime[i], 0]) / (abs(hmm.Sigma[regime[i], sigma_col[0], sigma_col[0]]) + 1e-10)
+        vol_regime[i] = float(np.clip(predict_obs_raw[i, vol_col] / raw_vol_mean, -5.0, 5.0))
+        trend_strength[i] = float(np.clip(np.abs(predict_obs_raw[i, ret_col]) / raw_ret_mean, 0.0, 10.0))
 
     return {
         "hmm_regime": regime,

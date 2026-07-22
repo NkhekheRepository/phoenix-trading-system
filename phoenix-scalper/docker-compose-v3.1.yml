@@ -1,0 +1,24 @@
+services:
+  phoenix-scalper-v3.1:
+    build: .
+    container_name: phoenix-scalper-v3.1-bot
+    restart: unless-stopped
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    environment:
+      - AIODNS_RESOLVE_USE_SOCKET=1
+    env_file: .env
+    ports:
+      - "127.0.0.1:8083:8083"
+    volumes:
+      - ./config-v3.1.json:/freqtrade/config.json:ro
+      - ./user_data:/freqtrade/user_data
+      - ./strategies:/freqtrade/strategies
+    command: >
+      trade
+      --config /freqtrade/config.json
+      --strategy PhoenixScalperV3_1
+      --strategy-path /freqtrade/strategies/
+      --db-url sqlite:////freqtrade/user_data/tradesv3_v3_1.sqlite
+      --logfile /freqtrade/user_data/logs/freqtrade_v3_1.log

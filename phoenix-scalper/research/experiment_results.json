@@ -1,0 +1,13 @@
+[
+  {
+    "name": "e11_funding_filter",
+    "desc": "E11: E12 + funding rate < -0.01% blocks shorts (contrarian)",
+    "n": 33,
+    "wr": 0.5455,
+    "pf": 1.3691,
+    "exp": 0.001063,
+    "avg_win": 0.007227,
+    "avg_loss": -0.006334,
+    "mdd": 0.030759
+  }
+]

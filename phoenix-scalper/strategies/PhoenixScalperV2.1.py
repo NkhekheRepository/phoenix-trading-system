@@ -23,7 +23,7 @@ from core.telegram_ev import register_ev_command
 logger = logging.getLogger(__name__)
 
 
-class PhoenixScalperV2(IStrategy):
+class PhoenixScalperV2_1(IStrategy):
     INTERFACE_VERSION = 3
 
     timeframe = "5m"
@@ -39,35 +39,37 @@ class PhoenixScalperV2(IStrategy):
 
     trailing_stop = False
 
-    LEVERAGE = 20
+    LEVERAGE = 10
 
     max_open_trades = 5
 
     MAX_CONSECUTIVE_LOSSES = 999
 
     buy_params = {
-        "score_threshold": 56,
-        "score_high_threshold": 59,
+        "adx_threshold": 30,
         "ema_fast": 7,
-        "ema_slow": 21,
-        "rsi_period": 5,
-        "rsi_oversold": 38,
-        "adx_threshold": 15,
-        "volume_factor": 1.0,
-        "short_lookback": 14,
-        "short_volume_mult": 1.0,
-        "short_adx_mult": 1.0,
-        "short_rsi_threshold": 47,
+        "ema_slow": 14,
+        "rsi_oversold": 22,
+        "rsi_period": 6,
+        "score_high_threshold": 60,
+        "score_threshold": 51,
+        "short_adx_mult": 1.258,
+        "short_lookback": 13,
+        "short_rsi_threshold": 46,
+        "short_volume_mult": 1.931,
+        "sl_max": 0.006,
         "sl_min": 0.003,
-        "sl_max": 0.005,
-        "grace_period": 10,
+        "volume_factor": 1.003,
     }
 
     sell_params = {
+        "bleed_loss": 0.033,
+        "bleed_time": 289,
+        "lock_ratio": 0.359,
+        "max_hold_min": 303,
         "rsi_overbought": 74,
-        "hmm_default_target": 0.421,
-        "hmm_range_target": 0.415,
-        "hmm_bull_target": 0.732,
+        "tp_target": 0.071,
+        "trail_threshold": 0.078,
     }
 
     ema_fast = IntParameter(5, 10, default=7, space="buy")
@@ -129,7 +131,7 @@ class PhoenixScalperV2(IStrategy):
         if self._monitor is None and hasattr(self, 'dp') and self.dp is not None:
             self._monitor = Monitor(
                 dp=self.dp,
-                bot_name="PhoenixScalperV2",
+                bot_name="nkhekhe god mode",
                 chat_id=self.config.get("telegram", {}).get("chat_id"),
                 token=self.config.get("telegram", {}).get("token"),
             )
@@ -162,7 +164,7 @@ class PhoenixScalperV2(IStrategy):
         self._ensure_ev_command()
         try:
             regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
-            regime_max = {"strong_bear": 10, "weak_bear": 10, "low_volatility": 7, "weak_bull": 3, "strong_bull": 0}
+            regime_max = {"strong_bear": 10, "weak_bear": 10, "low_volatility": 7, "weak_bull": 3, "strong_bull": 3}
             new_max = regime_max.get(regime_str, 5)
 
             drift_summary = {}
@@ -173,11 +175,11 @@ class PhoenixScalperV2(IStrategy):
             max_psi = max((s.get("current_psi", 0) for s in drift_summary.values()), default=0)
             if max_psi > 2.0:
                 self._drift_mode = "critical"
-                drift_factor = {"strong_bear": 3, "weak_bear": 3, "low_volatility": 3, "weak_bull": 3, "strong_bull": 0}
+                drift_factor = {"strong_bear": 3, "weak_bear": 3, "low_volatility": 3, "weak_bull": 3, "strong_bull": 3}
                 new_max = drift_factor.get(regime_str, 3)
             elif max_psi > 0.5:
                 self._drift_mode = "warning"
-                drift_factor = {"strong_bear": 7, "weak_bear": 7, "low_volatility": 5, "weak_bull": 3, "strong_bull": 0}
+                drift_factor = {"strong_bear": 7, "weak_bear": 7, "low_volatility": 5, "weak_bull": 3, "strong_bull": 3}
                 new_max = drift_factor.get(regime_str, 5)
             else:
                 self._drift_mode = "normal"
@@ -252,7 +254,7 @@ class PhoenixScalperV2(IStrategy):
                 leverage=self.LEVERAGE,
                 active_trades=open_trades,
                 max_trades=self.max_open_trades,
-                bot_name="PhoenixScalperV2",
+                bot_name="nkhekhe god mode",
                 total_trades_db=total_trades_db,
                 total_profit=total_profit,
                 win_count=win_count,
@@ -527,12 +529,11 @@ class PhoenixScalperV2(IStrategy):
             dataframe["adx"] > self.adx_threshold.value,
             dataframe["plus_di"] > dataframe["minus_di"],
             dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_pullback),
             ["enter_long", "enter_tag"]
-        ] = (1, "hmm_pullback")
+        ] = (1, "pullback")
 
         conditions_rsi = [
             dataframe[rsi] > 50,
@@ -541,7 +542,6 @@ class PhoenixScalperV2(IStrategy):
             dataframe["volume_ratio"] > self.volume_factor.value,
             dataframe["adx"] > self.adx_threshold.value,
             dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_rsi),
@@ -554,7 +554,6 @@ class PhoenixScalperV2(IStrategy):
             dataframe["adx"] > self.adx_threshold.value * 1.2,
             dataframe["close"] > dataframe[f"ema_{self.ema_slow.value}"],
             dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_breakout),
@@ -569,7 +568,6 @@ class PhoenixScalperV2(IStrategy):
             dataframe["close"] > dataframe[f"ema_{self.ema_fast.value}"],
             dataframe["volume_ratio"] > self.volume_factor.value,
             dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_kalman),
@@ -612,6 +610,9 @@ class PhoenixScalperV2(IStrategy):
             dataframe["volume_ratio"] > self.volume_factor.value * 1.3,
             dataframe["adx"] > self.adx_threshold.value * 1.1,
             dataframe["plus_di"] < dataframe["minus_di"],
+            dataframe[f"rsi_{self.rsi_period.value}"] < 45,
+            dataframe["close"] < dataframe[f"ema_{self.ema_slow.value}"],
+            dataframe["volume"] > 0,
         ]
         dataframe.loc[
             reduce(lambda x, y: x & y, conditions_short_bear),
@@ -632,13 +633,6 @@ class PhoenixScalperV2(IStrategy):
             (dataframe["enter_short"] == 1) & (dataframe["short_score"] < threshold),
             ["enter_short", "enter_tag"]
         ] = (0, None)
-
-        high_th = self.score_high_threshold.value
-        no_entry = (dataframe["enter_long"].fillna(0) == 0) & (dataframe["enter_short"].fillna(0) == 0)
-        high_long = no_entry & (dataframe["signal_score"] >= high_th) & (dataframe["signal_score"] > dataframe["short_score"])
-        high_short = no_entry & (dataframe["short_score"] >= high_th) & (dataframe["short_score"] > dataframe["signal_score"])
-        dataframe.loc[high_long, ["enter_long", "enter_tag"]] = (1, "score_override_long")
-        dataframe.loc[high_short, ["enter_short", "enter_tag"]] = (1, "score_override_short")
 
         long_pass = (dataframe["enter_long"] == 1)
         if long_pass.any():
@@ -661,47 +655,26 @@ class PhoenixScalperV2(IStrategy):
 
     def custom_exit(self, pair: str, trade, current_time: datetime,
                     current_rate: float, current_profit: float, **kwargs):
-        if current_profit >= 0.10:
-            return "mc1_tp_10pct"
-        elapsed = (current_time - trade.open_date_utc).total_seconds() / 3600
-        if elapsed > 8:
-            logger.info(f"Max hold (8h) reached for {pair}, exiting")
-            return "max_hold_8h"
+        elapsed = (current_time - trade.open_date_utc).total_seconds() / 60
+        if current_profit >= self.sell_params["tp_target"]:
+            return "tp_hit"
+        if current_profit < -self.sell_params["bleed_loss"] and elapsed > self.sell_params["bleed_time"]:
+            return "bleed_exit"
+        if elapsed > self.sell_params["max_hold_min"]:
+            return "max_hold"
         return None
 
     def custom_stoploss(self, pair: str, trade, current_time: datetime,
                         current_rate: float, current_profit: float,
                         after_fill: bool, **kwargs) -> float:
         if after_fill:
-            return -(0.02 / self.LEVERAGE)
-        regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
-        if trade.get_custom_data('regime_at_entry') is None:
-            trade.set_custom_data('regime_at_entry', regime_str)
-        if regime_str in ("strong_bear", "weak_bear"):
-            trail_factor = 1.20
-        elif regime_str == "low_volatility":
-            trail_factor = 1.10
-        else:
-            trail_factor = 1.0
-        lev = trade.leverage
-        elapsed = (current_time - trade.open_date_utc).total_seconds() / 60
-        if elapsed < 5:
-            max_eq_loss = 0.30
-        elif elapsed < 30:
-            max_eq_loss = 0.20
-        else:
-            max_eq_loss = 0.10
-        time_stop = -(max_eq_loss / lev)
-        if current_profit > 0.02:
-            trail_offset = 0.03 / lev * trail_factor
-            if current_profit > 0.05:
-                trail_offset = 0.02 / lev * trail_factor
-            if current_profit > 0.10:
-                trail_offset = 0.01 / lev * trail_factor
-            trail_stop = -(current_profit - trail_offset)
-            trail_stop = max(trail_stop, -(0.02 / lev))
-            return max(trail_stop, time_stop)
-        return time_stop
+            return -0.99
+        trail_threshold = self.sell_params["trail_threshold"]
+        lock_ratio = self.sell_params["lock_ratio"]
+        if current_profit > trail_threshold:
+            lock_equity = max(current_profit * lock_ratio, trail_threshold * 0.5)
+            return -(lock_equity / trade.leverage)
+        return self.stoploss
 
     def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, entry_tag: str | None,

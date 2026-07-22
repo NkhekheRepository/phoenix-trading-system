@@ -43,10 +43,10 @@ class MessageFormatter:
 
     @staticmethod
     def regime_alert(old_regime: str, new_regime: str, confidence: float, mode: str, signals: Dict) -> str:
-        emoji = "🟢" if "BULL" in new_regime else "🔴" if "BEAR" in new_regime else "🟡"
+        tag = "[BULL]" if "BULL" in new_regime else "[BEAR]" if "BEAR" in new_regime else "[SIDEWAYS]"
         lines = [
-            f"━━━ 🌦️ REGIME SHIFT ━━━",
-            f"{old_regime} → *{new_regime}* {emoji}",
+            f"━━━ REGIME SHIFT ━━━",
+            f"{old_regime} -> {new_regime} {tag}",
             f"Confidence: {confidence:.0%}",
             f"Mode: {mode}",
             f"Signals: Trend {signals.get('trend', 0):+.2f} | Mom {signals.get('momentum', 0):+.2f} | HMM {signals.get('hmm', 0):.2f}",
@@ -76,11 +76,11 @@ class MessageFormatter:
         if triggers:
             lines.append("Triggers:")
             for t in triggers:
-                lines.append(f"  • {t}")
+                lines.append(f"  - {t}")
         if impact:
             lines.append("Impact:")
             for k, v in impact.items():
-                lines.append(f"  • {k}: {v}")
+                lines.append(f"  - {k}: {v}")
         lines.append(MessageFormatter.SEP)
         return "\n".join(lines)
 
@@ -94,7 +94,7 @@ class MessageFormatter:
         if triggers:
             lines.append("Active warnings:")
             for t in triggers:
-                lines.append(f"  • {t}")
+                lines.append(f"  - {t}")
         lines.append(MessageFormatter.SEP)
         return "\n".join(lines)
 
@@ -128,11 +128,11 @@ class MessageFormatter:
         if failure_factors:
             lines.append("Failure factors:")
             for f in failure_factors:
-                lines.append(f"  • {f}")
+                lines.append(f"  - {f}")
         if success_factors:
             lines.append("Success factors:")
             for f in success_factors:
-                lines.append(f"  • {f}")
+                lines.append(f"  - {f}")
         lines.append(MessageFormatter.SEP)
         return "\n".join(lines)
 
@@ -161,7 +161,7 @@ class MessageFormatter:
         if results:
             lines.append("Results:")
             for k, v in results.items():
-                lines.append(f"  • {k}: {v:.4f}" if isinstance(v, float) else f"  • {k}: {v}")
+                lines.append(f"  - {k}: {v:.4f}" if isinstance(v, float) else f"  - {k}: {v}")
         lines.append(f"Decision: {emoji} *{decision.upper()}*")
         lines.append(f"Reason: {reason}")
         lines.append(MessageFormatter.SEP)
@@ -241,7 +241,7 @@ class MessageFormatter:
         ])
         if data.get('active_trades'):
             lines.append("")
-            lines.append(f"🟢 Active Trades ({len(data['active_trades'])}/{data.get('max_trades', 5)})")
+            lines.append(f"Active Trades ({len(data['active_trades'])}/{data.get('max_trades', 5)})")
             for t in data['active_trades'][:5]:
                 lines.append(f"  {t['pair']:12s} @ {t.get('rate', 0):,.0f}  {t.get('profit', ''):>8s}")
         lines.append(MessageFormatter.SEP)
@@ -267,7 +267,7 @@ class MessageFormatter:
             "━━━ 🤖 ML RETRAIN TRIGGERED ━━━",
         ]
         for t in triggers[:5]:
-            lines.append(f"  • {t.get('source', '?')}: {t.get('metric', '?')}={t.get('value', '?'):.2f}")
+            lines.append(f"  - {t.get('source', '?')}: {t.get('metric', '?')}={t.get('value', '?'):.2f}")
         lines.append(MessageFormatter.SEP)
         return "\n".join(lines)
 
@@ -304,7 +304,7 @@ class MessageFormatter:
         if reasons:
             lines.append("Reasons:")
             for r in reasons:
-                lines.append(f"  • {r}")
+                lines.append(f"  - {r}")
         lines.append(MessageFormatter.SEP)
         return "\n".join(lines)
 
@@ -553,7 +553,8 @@ class Monitor:
 
     def send_daily_summary(self, date_str: str, regime: str, risk_level: str,
                             exposure: float, leverage: float, active_trades: List[Dict],
-                            max_trades: int, bot_name: str = None):
+                            max_trades: int, bot_name: str = None, total_trades_db: int = 0,
+                            total_profit: float = 0.0, win_count: int = 0, loss_count: int = 0):
         if self._last_daily_date == date_str:
             return
         data = {
@@ -623,9 +624,9 @@ class Monitor:
                 if len(info) == 1:
                     self._send_now(info[0])
                 else:
-                    digest_lines = [f"━━━ 📬 DIGEST ({len(info)} events) ━━━"]
+                    digest_lines = [f"━━━ DIGEST ({len(info)} events) ━━━"]
                     for e in info[:5]:
-                        digest_lines.append(f"  • {e.title}")
+                        digest_lines.append(f"  - {e.title}")
                     if len(info) > 5:
                         digest_lines.append(f"  ... and {len(info) - 5} more")
                     digest_lines.append(MessageFormatter.SEP)

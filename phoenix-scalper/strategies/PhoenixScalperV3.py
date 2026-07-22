@@ -590,6 +590,9 @@ class PhoenixScalperV3(IStrategy):
                         after_fill: bool, **kwargs) -> float:
         if after_fill:
             return -0.99
+        regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
+        if trade.get_custom_data('regime_at_entry') is None:
+            trade.set_custom_data('regime_at_entry', regime_str)
         lev = trade.leverage
         elapsed = (current_time - trade.open_date_utc).total_seconds() / 60
         if elapsed < 5:
@@ -670,6 +673,10 @@ class PhoenixScalperV3(IStrategy):
                           rate: float, time_in_force: str, exit_reason: str,
                           current_time: datetime, **kwargs) -> bool:
         profit_pct = trade.calc_profit_ratio(rate=rate) * 100
+
+        regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
+        trade.set_custom_data('regime_at_exit', regime_str)
+        trade.set_custom_data('exit_reason', exit_reason)
 
         today = current_time.date()
         if self._current_trading_day != today:

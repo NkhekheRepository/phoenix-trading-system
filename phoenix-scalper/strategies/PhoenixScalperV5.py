@@ -1,6 +1,6 @@
 import talib.abstract as ta
 from datetime import datetime, timezone, date
-from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter, merge_informative_pair
+from freqtrade.strategy import IStrategy, IntParameter, DecimalParameter
 from freqtrade.persistence import Trade
 from pandas import DataFrame
 from functools import reduce
@@ -17,13 +17,12 @@ from core.regime_engine import RegimeEngine
 from core.risk_governor import RiskGovernor
 from core.data_quality import DataValidator
 from core.concept_drift import ConceptDriftDetector
-from core.ml_engine import MLEngine
 from core.telegram_ev import register_ev_command
 
 logger = logging.getLogger(__name__)
 
 
-class PhoenixScalperV2(IStrategy):
+class PhoenixScalperV5(IStrategy):
     INTERFACE_VERSION = 3
 
     timeframe = "5m"
@@ -36,61 +35,49 @@ class PhoenixScalperV2(IStrategy):
 
     stoploss = -0.12
     use_custom_stoploss = True
-
     trailing_stop = False
 
-    LEVERAGE = 20
+    LEVERAGE = 10
+    max_open_trades = 3
 
-    max_open_trades = 5
-
-    MAX_CONSECUTIVE_LOSSES = 999
+    MAX_CONSECUTIVE_LOSSES = 5
 
     buy_params = {
-        "score_threshold": 56,
-        "score_high_threshold": 59,
+        "score_threshold": 50,
         "ema_fast": 7,
         "ema_slow": 21,
         "rsi_period": 5,
-        "rsi_oversold": 38,
-        "adx_threshold": 15,
-        "volume_factor": 1.0,
+        "adx_strong": 25,
+        "volume_factor": 1.5,
         "short_lookback": 14,
-        "short_volume_mult": 1.0,
-        "short_adx_mult": 1.0,
-        "short_rsi_threshold": 47,
         "sl_min": 0.003,
-        "sl_max": 0.005,
-        "grace_period": 10,
+        "sl_max": 0.006,
+        "hmm_bear_threshold": 0.30,
+        "hmm_range_threshold": 0.40,
+        "max_daily_trades_per_pair": 2,
     }
 
     sell_params = {
-        "rsi_overbought": 74,
         "hmm_default_target": 0.421,
         "hmm_range_target": 0.415,
         "hmm_bull_target": 0.732,
     }
 
     ema_fast = IntParameter(5, 10, default=7, space="buy")
-    ema_slow = IntParameter(12, 22, default=15, space="buy")
-    rsi_period = IntParameter(5, 10, default=7, space="buy")
-    rsi_oversold = IntParameter(25, 40, default=30, space="buy")
-    rsi_overbought = IntParameter(68, 78, default=72, space="sell")
-    adx_threshold = IntParameter(15, 25, default=20, space="buy")
-    volume_factor = DecimalParameter(1.0, 2.0, default=1.2, space="buy")
-
+    ema_slow = IntParameter(12, 22, default=21, space="buy")
+    rsi_period = IntParameter(5, 10, default=5, space="buy")
+    adx_strong = IntParameter(20, 35, default=25, space="buy")
+    volume_factor = DecimalParameter(1.0, 2.5, default=1.5, space="buy")
+    short_lookback = IntParameter(7, 15, default=14, space="buy")
+    sl_min = DecimalParameter(0.0015, 0.0035, default=0.003, space="buy")
+    sl_max = DecimalParameter(0.0035, 0.0060, default=0.006, space="buy")
     atr_sl_mult = DecimalParameter(0.5, 1.2, default=0.7, space="buy")
-    short_lookback = IntParameter(7, 15, default=10, space="buy")
-    short_volume_mult = DecimalParameter(1.5, 3.0, default=2.0, space="buy")
-    short_adx_mult = DecimalParameter(1.0, 1.5, default=1.3, space="buy")
-    short_rsi_threshold = IntParameter(35, 55, default=45, space="buy")
-    sl_min = DecimalParameter(0.0015, 0.0035, default=0.0025, space="buy")
-    sl_max = DecimalParameter(0.0035, 0.0060, default=0.0050, space="buy")
-    grace_period = IntParameter(3, 10, default=5, space="buy")
+    hmm_bear_threshold = DecimalParameter(0.15, 0.45, default=0.30, space="buy")
+    hmm_range_threshold = DecimalParameter(0.25, 0.55, default=0.40, space="buy")
+    score_threshold = IntParameter(35, 70, default=50, space="buy")
     hmm_default_target = DecimalParameter(0.35, 0.80, default=0.55, space="sell")
     hmm_range_target = DecimalParameter(0.25, 0.55, default=0.35, space="sell")
     hmm_bull_target = DecimalParameter(0.50, 1.20, default=0.80, space="sell")
-    score_threshold = IntParameter(35, 80, default=55, space="buy")
-    score_high_threshold = IntParameter(45, 75, default=55, space="buy")
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
@@ -113,23 +100,18 @@ class PhoenixScalperV2(IStrategy):
             psi_threshold=0.2, kl_threshold=0.1, wasserstein_threshold=0.5, window_size=500,
             on_notify=self._notify_handler,
         )
-        self._ml_engine = MLEngine(
-            trade_intel=self._trade_intel,
-            concept_drift=self._concept_drift,
-            on_notify=self._notify_handler,
-        )
-        self._ml_baseline_set = False
-        self._ml_check_counter = 0
         self._drift_ref_set = False
         self._drift_ref_buffer = {}
         self._monitor = None
         self._drift_mode = "normal"
 
+        self._daily_trade_counts = {}
+
     def _ensure_monitor(self):
         if self._monitor is None and hasattr(self, 'dp') and self.dp is not None:
             self._monitor = Monitor(
                 dp=self.dp,
-                bot_name="PhoenixScalperV2",
+                bot_name="PhoenixScalperV5",
                 chat_id=self.config.get("telegram", {}).get("chat_id"),
                 token=self.config.get("telegram", {}).get("token"),
             )
@@ -162,8 +144,8 @@ class PhoenixScalperV2(IStrategy):
         self._ensure_ev_command()
         try:
             regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
-            regime_max = {"strong_bear": 10, "weak_bear": 10, "low_volatility": 7, "weak_bull": 3, "strong_bull": 0}
-            new_max = regime_max.get(regime_str, 5)
+            regime_max = {"strong_bear": 6, "weak_bear": 5, "low_volatility": 4, "weak_bull": 1, "strong_bull": 0}
+            new_max = regime_max.get(regime_str, 3)
 
             drift_summary = {}
             try:
@@ -173,12 +155,12 @@ class PhoenixScalperV2(IStrategy):
             max_psi = max((s.get("current_psi", 0) for s in drift_summary.values()), default=0)
             if max_psi > 2.0:
                 self._drift_mode = "critical"
-                drift_factor = {"strong_bear": 3, "weak_bear": 3, "low_volatility": 3, "weak_bull": 3, "strong_bull": 0}
-                new_max = drift_factor.get(regime_str, 3)
+                drift_factor = {"strong_bear": 2, "weak_bear": 2, "low_volatility": 2, "weak_bull": 0, "strong_bull": 0}
+                new_max = drift_factor.get(regime_str, 2)
             elif max_psi > 0.5:
                 self._drift_mode = "warning"
-                drift_factor = {"strong_bear": 7, "weak_bear": 7, "low_volatility": 5, "weak_bull": 3, "strong_bull": 0}
-                new_max = drift_factor.get(regime_str, 5)
+                drift_factor = {"strong_bear": 4, "weak_bear": 3, "low_volatility": 3, "weak_bull": 1, "strong_bull": 0}
+                new_max = drift_factor.get(regime_str, 3)
             else:
                 self._drift_mode = "normal"
 
@@ -252,11 +234,7 @@ class PhoenixScalperV2(IStrategy):
                 leverage=self.LEVERAGE,
                 active_trades=open_trades,
                 max_trades=self.max_open_trades,
-                bot_name="PhoenixScalperV2",
-                total_trades_db=total_trades_db,
-                total_profit=total_profit,
-                win_count=win_count,
-                loss_count=loss_count,
+                bot_name="PhoenixScalperV5",
             )
 
             self._monitor.send_hourly_health({
@@ -297,8 +275,10 @@ class PhoenixScalperV2(IStrategy):
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         pair_key = metadata.get('pair', 'default')
+        do_heavy = (self._hmm_update_count % 60 == 0)
 
-        validation = self._data_validator.validate_candles(dataframe, pair_key)
+        if do_heavy:
+            self._data_validator.validate_candles(dataframe, pair_key)
 
         for period in range(5, 11):
             dataframe[f"rsi_{period}"] = ta.RSI(dataframe, timeperiod=period)
@@ -334,7 +314,7 @@ class PhoenixScalperV2(IStrategy):
         dataframe["atr_pct"] = dataframe["atr"] / (dataframe["close"] + 1e-10)
 
         try:
-            if pair_key not in self._kalman_cache:
+            if do_heavy or pair_key not in self._kalman_cache:
                 from ml.kalman_filter import compute_kalman_features
                 kf_features = compute_kalman_features(
                     dataframe['close'].values,
@@ -365,7 +345,7 @@ class PhoenixScalperV2(IStrategy):
                         dataframe[col] = 0.0
 
         try:
-            if pair_key not in self._hmm_cache:
+            if do_heavy or pair_key not in self._hmm_cache:
                 from ml.hmm_regime import compute_hmm_features
                 returns = np.log(dataframe['close'] / dataframe['close'].shift(1))
                 vol = returns.rolling(10).std()
@@ -374,6 +354,7 @@ class PhoenixScalperV2(IStrategy):
                     returns.fillna(0).values,
                     vol.fillna(0).values,
                     volume_change.fillna(0).values,
+                    predict_horizon=1,
                 )
                 self._hmm_cache[pair_key] = hmm_features
             else:
@@ -412,7 +393,7 @@ class PhoenixScalperV2(IStrategy):
         except Exception as e:
             logger.warning(f"RegimeEngine: {e}")
 
-        if self._hmm_update_count % 10 == 0:
+        if do_heavy:
             self._feed_concept_drift(dataframe)
 
         dataframe = self._calculate_entry_score(dataframe)
@@ -467,37 +448,17 @@ class PhoenixScalperV2(IStrategy):
         ema_f = f"ema_{self.ema_fast.value}"
         ema_s = f"ema_{self.ema_slow.value}"
 
-        hmm_bull = np.minimum(dataframe["hmm_p_bull"].values / 0.6, 1.0) * 20
+        hmm_bear = np.minimum(dataframe["hmm_p_bear"].values / 0.6, 1.0) * 20
         trend_str = np.minimum(dataframe["adx"].values / 40.0, 1.0) * 15
         kalman_c = np.minimum(dataframe["kf_confidence"].values / 0.8, 1.0) * 10
-        di_diff = dataframe["plus_di"].values - dataframe["minus_di"].values
-        directional = np.clip(di_diff / 20.0 + 0.5, 0, 1) * 10
-        mom_a = np.minimum(np.maximum(dataframe["kf_trend_acceleration"].values, 0), 1)
-        mom_p = np.minimum(np.maximum(dataframe["kf_price_momentum"].values, 0), 1)
-        momentum = (mom_a + mom_p) / 2.0 * 10
-        volume = np.minimum(dataframe["volume_ratio"].values / 3.0, 1.0) * 10
-        stability = (1.0 - np.minimum(dataframe["hmm_regime_stability"].values / 0.5, 1.0)) * 10
-        rsi_v = dataframe[rsi_col].values
-        rsi_s = np.maximum(0, 1.0 - np.abs(rsi_v - 45) / 25.0) * 5
-        ema_dist = np.abs(dataframe["close"].values / dataframe[ema_s].values - 1.0)
-        pullback = np.maximum(0, 1.0 - ema_dist / 0.02) * 5
-        trend_al = (
-            (dataframe["close"].values > dataframe[ema_f].values).astype(float) +
-            (dataframe["close"].values > dataframe[ema_s].values).astype(float) +
-            (dataframe["close"].values > dataframe["ema_50"].values).astype(float)
-        ) / 3.0 * 5
-
-        dataframe["signal_score"] = (
-            hmm_bull + trend_str + kalman_c + directional +
-            momentum + volume + stability + rsi_s + pullback + trend_al
-        )
-
-        hmm_bear = np.minimum(dataframe["hmm_p_bear"].values / 0.6, 1.0) * 20
         di_s = dataframe["minus_di"].values - dataframe["plus_di"].values
         directional_s = np.clip(di_s / 20.0 + 0.5, 0, 1) * 10
         mom_a_s = np.minimum(np.maximum(-dataframe["kf_trend_acceleration"].values, 0), 1)
         mom_p_s = np.minimum(np.maximum(-dataframe["kf_price_momentum"].values, 0), 1)
         momentum_s = (mom_a_s + mom_p_s) / 2.0 * 10
+        volume = np.minimum(dataframe["volume_ratio"].values / 3.0, 1.0) * 10
+        stability = (1.0 - np.minimum(dataframe["hmm_regime_stability"].values / 0.5, 1.0)) * 10
+        rsi_v = dataframe[rsi_col].values
         rsi_s_s = np.maximum(0, 1.0 - np.abs(rsi_v - 70) / 20.0) * 5
         bk_dist = np.abs(dataframe["close"].values / dataframe[ema_s].values - 1.0)
         breakdown = np.maximum(0, 1.0 - bk_dist / 0.02) * 5
@@ -515,143 +476,85 @@ class PhoenixScalperV2(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        rsi = f"rsi_{self.rsi_period.value}"
+        dataframe["enter_short"] = 0
+        dataframe["enter_tag"] = ""
 
-        conditions_pullback = [
-            dataframe["low"] <= dataframe[f"ema_{self.ema_slow.value}"] * 1.005,
-            dataframe["close"] > dataframe[f"ema_{self.ema_slow.value}"],
-            dataframe["close"] > dataframe["open"],
-            dataframe[rsi] > 35,
-            dataframe[rsi] < 55,
-            dataframe["volume_ratio"] > self.volume_factor.value,
-            dataframe["adx"] > self.adx_threshold.value,
-            dataframe["plus_di"] > dataframe["minus_di"],
-            dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
-        ]
-        dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_pullback),
-            ["enter_long", "enter_tag"]
-        ] = (1, "hmm_pullback")
+        ema_f = f"ema_{self.ema_fast.value}"
+        ema_s = f"ema_{self.ema_slow.value}"
+        rsi_col = f"rsi_{self.rsi_period.value}"
 
-        conditions_rsi = [
-            dataframe[rsi] > 50,
-            dataframe["close"] > dataframe["open"],
-            dataframe["close"] > dataframe[f"ema_{self.ema_fast.value}"],
-            dataframe["volume_ratio"] > self.volume_factor.value,
-            dataframe["adx"] > self.adx_threshold.value,
-            dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
-        ]
-        dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_rsi),
-            ["enter_long", "enter_tag"]
-        ] = (1, "rsi_momentum")
+        bear_or_range = (
+            (dataframe["hmm_p_bear"] >= self.hmm_bear_threshold.value) |
+            (dataframe["hmm_p_range"] >= self.hmm_range_threshold.value)
+        )
 
-        conditions_breakout = [
-            dataframe["close"] > dataframe["high"].rolling(5).max().shift(1),
-            dataframe["volume_ratio"] > self.volume_factor.value * 1.5,
-            dataframe["adx"] > self.adx_threshold.value * 1.2,
-            dataframe["close"] > dataframe[f"ema_{self.ema_slow.value}"],
-            dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
-        ]
-        dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_breakout),
-            ["enter_long", "enter_tag"]
-        ] = (1, "momentum_breakout")
+        trend_down = (
+            (dataframe["close"] < dataframe[ema_s]) &
+            (dataframe["close"] < dataframe["ema_50"]) &
+            (dataframe["minus_di"] > dataframe["plus_di"]) &
+            (dataframe["adx"] >= self.adx_strong.value)
+        )
 
-        conditions_kalman = [
-            dataframe["kf_trend"] > 0,
-            dataframe["kf_confidence"] > 0.6,
-            dataframe["close"] > dataframe["kf_prediction"],
-            dataframe["kf_trend_acceleration"] > 0,
-            dataframe["close"] > dataframe[f"ema_{self.ema_fast.value}"],
-            dataframe["volume_ratio"] > self.volume_factor.value,
-            dataframe["volume"] > 0,
-            dataframe["hmm_p_bull"] > dataframe["hmm_p_bear"],
-        ]
-        dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_kalman),
-            ["enter_long", "enter_tag"]
-        ] = (1, "kalman_cont")
+        vol_spike = dataframe["volume_ratio"] >= self.volume_factor.value
+        rsi_bearish = dataframe[rsi_col] < 60
+        bearish_candle = dataframe["close"] < dataframe["open"]
+        score_ok = (dataframe["short_score"] >= self.score_threshold.value) & (dataframe["short_score"] <= 80)
 
-        conditions_short_breakdown = [
+        conditions_breakdown = [
+            bear_or_range,
+            trend_down,
+            vol_spike,
+            rsi_bearish,
+            bearish_candle,
             dataframe["close"] < dataframe["low"].rolling(self.short_lookback.value).min().shift(1),
-            dataframe["volume_ratio"] > self.volume_factor.value * self.short_volume_mult.value,
-            dataframe["adx"] > self.adx_threshold.value * self.short_adx_mult.value,
-            dataframe["close"] < dataframe[f"ema_{self.ema_slow.value}"],
-            dataframe["close"] < dataframe["open"],
-            dataframe["plus_di"] < dataframe["minus_di"],
-            dataframe[f"rsi_{self.rsi_period.value}"] < self.short_rsi_threshold.value,
+            score_ok,
             dataframe["volume"] > 0,
         ]
         dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_short_breakdown),
+            reduce(lambda x, y: x & y, conditions_breakdown),
             ["enter_short", "enter_tag"]
-        ] = (1, "short_breakdown")
+        ] = (1, "v5_breakdown")
 
-        conditions_short_rally = [
-            dataframe["high"] >= dataframe[f"ema_{self.ema_slow.value}"] * 0.995,
-            dataframe["close"] < dataframe[f"ema_{self.ema_slow.value}"],
-            dataframe["close"] < dataframe["open"],
-            dataframe[rsi] > 55,
-            dataframe[rsi] < 75,
-            dataframe["volume_ratio"] > self.volume_factor.value,
-            dataframe["adx"] > self.adx_threshold.value,
-            dataframe["plus_di"] < dataframe["minus_di"],
+        conditions_rally_fail = [
+            bear_or_range,
+            trend_down,
+            vol_spike,
+            dataframe[rsi_col] > 50,
+            dataframe[rsi_col] < 75,
+            bearish_candle,
+            dataframe["high"] >= dataframe[ema_s] * 0.995,
+            dataframe["close"] < dataframe[ema_s],
+            score_ok,
             dataframe["volume"] > 0,
         ]
+        mask_rally = reduce(lambda x, y: x & y, conditions_rally_fail)
+        already = dataframe["enter_short"] == 1
         dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_short_rally),
+            mask_rally & ~already,
             ["enter_short", "enter_tag"]
-        ] = (1, "short_rally_fail")
+        ] = (1, "v5_rally_fail")
 
-        conditions_short_bear = [
-            dataframe["close"] < dataframe["open"],
+        conditions_bear_mom = [
+            bear_or_range,
+            trend_down,
             dataframe["volume_ratio"] > self.volume_factor.value * 1.3,
-            dataframe["adx"] > self.adx_threshold.value * 1.1,
-            dataframe["plus_di"] < dataframe["minus_di"],
+            bearish_candle,
+            dataframe[rsi_col] < 55,
+            dataframe["macdhist"] < 0,
+            score_ok,
         ]
+        mask_mom = reduce(lambda x, y: x & y, conditions_bear_mom)
+        already = dataframe["enter_short"] == 1
         dataframe.loc[
-            reduce(lambda x, y: x & y, conditions_short_bear),
+            mask_mom & ~already,
             ["enter_short", "enter_tag"]
-        ] = (1, "short_bear_momentum")
-
-        # Score ceiling: clamp scores >58 to 58 (so override/threshold use cleaned
-        # values but strong signals still pass the >= threshold entry gate).
-        dataframe.loc[dataframe["signal_score"] > 58, "signal_score"] = 58.0
-        dataframe.loc[dataframe["short_score"] > 58, "short_score"] = 58.0
-
-        threshold = self.score_threshold.value
-        dataframe.loc[
-            (dataframe["enter_long"] == 1) & (dataframe["signal_score"] < threshold),
-            ["enter_long", "enter_tag"]
-        ] = (0, None)
-        dataframe.loc[
-            (dataframe["enter_short"] == 1) & (dataframe["short_score"] < threshold),
-            ["enter_short", "enter_tag"]
-        ] = (0, None)
-
-        high_th = self.score_high_threshold.value
-        no_entry = (dataframe["enter_long"].fillna(0) == 0) & (dataframe["enter_short"].fillna(0) == 0)
-        high_long = no_entry & (dataframe["signal_score"] >= high_th) & (dataframe["signal_score"] > dataframe["short_score"])
-        high_short = no_entry & (dataframe["short_score"] >= high_th) & (dataframe["short_score"] > dataframe["signal_score"])
-        dataframe.loc[high_long, ["enter_long", "enter_tag"]] = (1, "score_override_long")
-        dataframe.loc[high_short, ["enter_short", "enter_tag"]] = (1, "score_override_short")
-
-        long_pass = (dataframe["enter_long"] == 1)
-        if long_pass.any():
-            dataframe.loc[long_pass, "enter_tag"] = (
-                dataframe.loc[long_pass, "enter_tag"].astype(str) +
-                " [" + dataframe.loc[long_pass, "signal_score"].astype(int).astype(str) + "]"
-            )
+        ] = (1, "v5_bear_momentum")
 
         short_pass = (dataframe["enter_short"] == 1)
         if short_pass.any():
             dataframe.loc[short_pass, "enter_tag"] = (
                 dataframe.loc[short_pass, "enter_tag"].astype(str) +
-                " [" + dataframe.loc[short_pass, "short_score"].astype(int).astype(str) + "]"
+                " [" + dataframe.loc[short_pass, "short_score"].round(0).astype(int).astype(str) + "]"
             )
 
         return dataframe
@@ -662,42 +565,38 @@ class PhoenixScalperV2(IStrategy):
     def custom_exit(self, pair: str, trade, current_time: datetime,
                     current_rate: float, current_profit: float, **kwargs):
         if current_profit >= 0.10:
-            return "mc1_tp_10pct"
+            return "v5_tp_10pct"
+        if current_profit <= -0.08:
+            logger.warning(f"V5 hard stop {-0.08:.0%} triggered for {pair}")
+            return "v5_hard_stop"
         elapsed = (current_time - trade.open_date_utc).total_seconds() / 3600
-        if elapsed > 8:
-            logger.info(f"Max hold (8h) reached for {pair}, exiting")
-            return "max_hold_8h"
+        if elapsed > 1:
+            return "v5_max_hold_1h"
         return None
 
     def custom_stoploss(self, pair: str, trade, current_time: datetime,
                         current_rate: float, current_profit: float,
                         after_fill: bool, **kwargs) -> float:
         if after_fill:
-            return -(0.02 / self.LEVERAGE)
+            return -0.99
         regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
         if trade.get_custom_data('regime_at_entry') is None:
             trade.set_custom_data('regime_at_entry', regime_str)
-        if regime_str in ("strong_bear", "weak_bear"):
-            trail_factor = 1.20
-        elif regime_str == "low_volatility":
-            trail_factor = 1.10
-        else:
-            trail_factor = 1.0
         lev = trade.leverage
         elapsed = (current_time - trade.open_date_utc).total_seconds() / 60
         if elapsed < 5:
-            max_eq_loss = 0.30
+            max_eq_loss = 0.50
         elif elapsed < 30:
-            max_eq_loss = 0.20
+            max_eq_loss = 0.30
         else:
-            max_eq_loss = 0.10
+            max_eq_loss = 0.20
         time_stop = -(max_eq_loss / lev)
         if current_profit > 0.02:
-            trail_offset = 0.03 / lev * trail_factor
+            trail_offset = 0.03 / lev
             if current_profit > 0.05:
-                trail_offset = 0.02 / lev * trail_factor
+                trail_offset = 0.02 / lev
             if current_profit > 0.10:
-                trail_offset = 0.01 / lev * trail_factor
+                trail_offset = 0.01 / lev
             trail_stop = -(current_profit - trail_offset)
             trail_stop = max(trail_stop, -(0.02 / lev))
             return max(trail_stop, time_stop)
@@ -712,8 +611,8 @@ class PhoenixScalperV2(IStrategy):
                             proposed_stake: float, min_stake: float, max_stake: float,
                             entry_tag: str | None, side: str, **kwargs) -> float:
         wallet = self.wallets.get_total_stake_amount()
-        kelly_75_pct = 0.10
-        return max(min_stake, min(wallet * kelly_75_pct, max_stake))
+        stake_pct = 0.08
+        return max(min_stake, min(wallet * stake_pct, max_stake))
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
                            time_in_force: str, current_time: datetime, entry_tag: str | None,
@@ -722,19 +621,32 @@ class PhoenixScalperV2(IStrategy):
         if self._current_trading_day != today:
             self._current_trading_day = today
             self._consecutive_losses = 0
+            self._daily_trade_counts = {}
+
         if self._consecutive_losses >= self.MAX_CONSECUTIVE_LOSSES:
-            logger.info(f"Loss breaker active ({self._consecutive_losses} consecutive), rejecting {pair} {side}")
+            logger.info(f"V5 loss breaker active ({self._consecutive_losses} consecutive), rejecting {pair} {side}")
             return False
 
         regime_str = self._last_regime_str if hasattr(self, "_last_regime_str") else "unknown"
+        if side == "short" and regime_str in ("strong_bull", "weak_bull", "high_volatility"):
+            logger.info(f"V5 regime {regime_str} blocking short {pair}")
+            return False
 
         pair_cooldown_key = f"cooldown_{pair}"
         last_loss_time = getattr(self, pair_cooldown_key, None)
         if last_loss_time is not None:
             elapsed = (current_time - last_loss_time).total_seconds() / 60
             if elapsed < 30:
-                logger.info(f"Cooldown active for {pair} ({elapsed:.0f}m since last loss), rejecting")
+                logger.info(f"V5 cooldown active for {pair} ({elapsed:.0f}m since last loss), rejecting")
                 return False
+
+        daily_key = f"{today}_{pair}"
+        pair_daily_count = self._daily_trade_counts.get(daily_key, 0)
+        max_daily = self.buy_params.get("max_daily_trades_per_pair", 2)
+        if pair_daily_count >= max_daily:
+            logger.info(f"V5 daily limit reached for {pair} ({pair_daily_count}/{max_daily}), rejecting")
+            return False
+        self._daily_trade_counts[daily_key] = pair_daily_count + 1
 
         trade_id = self._trade_intel.start_trade(
             pair=pair, side=side, leverage=self.leverage(pair, current_time, rate, 0, 0, entry_tag, side),
@@ -790,30 +702,5 @@ class PhoenixScalperV2(IStrategy):
             failure_factors=failure_factors,
             success_factors=success_factors,
         )
-
-        if not self._ml_baseline_set:
-            total = self._trade_intel.get_trade_count()
-            if total >= 20:
-                try:
-                    winners = self._trade_intel.analyze_winning_patterns(n_trades=100)
-                    losers = self._trade_intel.analyze_losing_patterns(n_trades=100)
-                    n_w = winners.get("total_winners", 0)
-                    n_l = losers.get("total_losers", 0)
-                    if n_w + n_l >= 20:
-                        self._ml_engine.set_baseline({
-                            "win_rate": n_w / (n_w + n_l) if (n_w + n_l) > 0 else 0.5,
-                            "avg_loss_pct": abs(losers.get("avg_loss_pct", 0)),
-                        })
-                        self._ml_baseline_set = True
-                except Exception as e:
-                    logger.warning(f"ML baseline: {e}")
-
-        if self._ml_baseline_set:
-            self._ml_check_counter += 1
-            if self._ml_check_counter % 10 == 0:
-                try:
-                    triggers = self._ml_engine.check_retrain_triggers()
-                except Exception as e:
-                    logger.warning(f"ML check: {e}")
 
         return True

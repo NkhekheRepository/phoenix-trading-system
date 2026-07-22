@@ -1,7 +1,7 @@
 services:
-  phoenix-scalper-v4:
+  phoenix-scalper-v5-btc:
     build: .
-    container_name: phoenix-scalper-v4-bot
+    container_name: phoenix-scalper-v5-btc-bot
     restart: unless-stopped
     dns:
       - 8.8.8.8
@@ -10,17 +10,18 @@ services:
       - AIODNS_RESOLVE_USE_SOCKET=1
     env_file: .env
     ports:
-      - "127.0.0.1:8084:8084"
+      - "127.0.0.1:8085:8085"
     volumes:
-      - ./config-v4.json:/freqtrade/config.json:ro
-      - scalper_v4_data:/freqtrade/user_data
+      - ./config-v5-btc.json:/freqtrade/config.json:ro
+      - ./user_data:/freqtrade/user_data
+      - ./strategies:/freqtrade/strategies
     command: >
       trade
       --config /freqtrade/config.json
-      --strategy PhoenixScalperV4_1
+      --strategy PhoenixScalperV5_BTC
       --strategy-path /freqtrade/strategies/
       --db-url sqlite:////freqtrade/user_data/tradesv3.sqlite
       --logfile /freqtrade/user_data/logs/freqtrade.log
 
 volumes:
-  scalper_v4_data:
+  scalper_v5_btc_data:

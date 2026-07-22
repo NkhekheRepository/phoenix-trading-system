@@ -1,0 +1,27 @@
+{
+    "max_open_trades": 3,
+    "stake_currency": "USDT",
+    "stake_amount": 100.0,
+    "dry_run": true,
+    "trading_mode": "futures",
+    "margin_mode": "isolated",
+    "exchange": {
+        "name": "binance",
+        "pair_whitelist": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT", "XRP/USDT:USDT", "DOGE/USDT:USDT", "BNB/USDT:USDT", "ADA/USDT:USDT", "LINK/USDT:USDT"],
+        "pair_blacklist": [],
+        "ccxt_config": {
+            "enableRateLimit": false
+        },
+        "ccxt_async_config": {
+            "enableRateLimit": false
+        }
+    },
+    "pairlists": [{"method": "StaticPairList"}],
+    "entry_pricing": {"price_side": "other", "use_order_book": true, "order_book_top": 1, "price_last_balance": 0.0},
+    "exit_pricing": {"price_side": "other", "use_order_book": true, "order_book_top": 1, "price_last_balance": 0.0},
+    "telegram": {"enabled": false, "token": "dummy", "chat_id": "dummy"},
+    "api_server": {"enabled": false, "listen_ip_address": "0.0.0.0", "listen_port": 8088, "username": "", "password": ""},
+    "db_url": "sqlite:////freqtrade/user_data/tradesv3_hyperopt.sqlite",
+    "initial_state": "running",
+    "fiat_display_currency": "USD"
+}

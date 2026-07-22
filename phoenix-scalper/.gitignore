@@ -1,5 +1,9 @@
 # Config with secrets
 config.json
+config-v2.1.json
+config-v3.1.json
+config-v4.json
+config-v5-btc.json
 .env
 
 # Data

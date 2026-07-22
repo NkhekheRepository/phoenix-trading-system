@@ -1,0 +1,47 @@
+{
+  "strategy_name": "PhoenixScalperV2_1_Hyperopt",
+  "params": {
+    "roi": {
+      "0": 10.0
+    },
+    "stoploss": {
+      "stoploss": -0.12
+    },
+    "trailing": {
+      "trailing_stop": false,
+      "trailing_stop_positive": null,
+      "trailing_stop_positive_offset": 0.0,
+      "trailing_only_offset_is_reached": false
+    },
+    "max_open_trades": {
+      "max_open_trades": 3
+    },
+    "buy": {
+      "adx_threshold": 30,
+      "ema_fast": 7,
+      "ema_slow": 14,
+      "rsi_oversold": 22,
+      "rsi_period": 6,
+      "score_high_threshold": 60,
+      "score_threshold": 51,
+      "short_adx_mult": 1.258,
+      "short_lookback": 13,
+      "short_rsi_threshold": 46,
+      "short_volume_mult": 1.931,
+      "sl_max": 0.006,
+      "sl_min": 0.003,
+      "volume_factor": 1.003
+    },
+    "sell": {
+      "bleed_loss": 0.033,
+      "bleed_time": 289,
+      "lock_ratio": 0.359,
+      "max_hold_min": 303,
+      "rsi_overbought": 74,
+      "tp_target": 0.071,
+      "trail_threshold": 0.078
+    }
+  },
+  "ft_stratparam_v": 1,
+  "export_time": "2026-07-21 09:18:46.256683+00:00"
+}
